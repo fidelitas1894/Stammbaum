@@ -472,7 +472,8 @@ def karte_json(request):
 
 def geocode_ort(request, ort_name):
     ort, created = Ort.objects.get_or_create(name=ort_name)
-    if ort.lat is None:
+    force = request.GET.get('force') == '1'
+    if ort.lat is None or force:
         try:
             resp = requests.get(
                 'https://nominatim.openstreetmap.org/search',
@@ -489,6 +490,24 @@ def geocode_ort(request, ort_name):
         except Exception:
             pass
     return JsonResponse({'lat': ort.lat, 'lon': ort.lon, 'name': ort.name})
+
+
+@login_required
+def ort_koordinaten_update(request, ort_name):
+    if request.method != 'POST':
+        return JsonResponse({'error': 'POST required'}, status=405)
+    try:
+        data = json.loads(request.body)
+        lat = float(data['lat'])
+        lon = float(data['lon'])
+    except (KeyError, ValueError, json.JSONDecodeError):
+        return JsonResponse({'error': 'Ungültige Koordinaten'}, status=400)
+    ort, _ = Ort.objects.get_or_create(name=ort_name)
+    ort.lat = lat
+    ort.lon = lon
+    ort.geocodiert_am = timezone.now()
+    ort.save()
+    return JsonResponse({'ok': True, 'lat': ort.lat, 'lon': ort.lon})
 
 
 # ---------------------------------------------------------------------------
@@ -814,10 +833,25 @@ def verwandtschaft_api(request):
             s += f', {entfernt}× entfernt'
         return s
 
+    def onkel_tante(g, n_grosz):
+        # n_grosz=0 → Onkel/Tante, 1 → Großonkel/-tante, 2+ → N×Großonkel/-tante
+        if n_grosz == 0:
+            return 'Tante' if g == 'F' else 'Onkel'
+        if n_grosz == 1:
+            return 'Großtante' if g == 'F' else 'Großonkel'
+        return f'Großtante/-onkel ({n_grosz}× groß)'
+
+    def nichte_neffe(g, n_grosz):
+        if n_grosz == 0:
+            return 'Nichte' if g == 'F' else 'Neffe'
+        if n_grosz == 1:
+            return 'Großnichte' if g == 'F' else 'Großneffe'
+        return f'Großnichte/-neffe ({n_grosz}× groß)'
+
     if da == 0 and db == 0:
         grad = 'Dieselbe Person'
     elif da == 0:
-        # A ist Vorfahre von B
+        # A ist direkter Vorfahre von B
         if db == 1:
             grad = 'Vater' if gA == 'M' else 'Mutter'
         elif db == 2:
@@ -827,35 +861,40 @@ def verwandtschaft_api(request):
         else:
             grad = f'Vorfahr ({db} Generationen)'
     elif db == 0:
-        # B ist Vorfahre von A
+        # B ist direkter Vorfahre von A  →  A ist Nachfahre von B
         if da == 1:
-            grad = 'Sohn' if gB == 'M' else 'Tochter'
+            grad = 'Sohn' if gA == 'M' else 'Tochter'        # gA: A's Geschlecht
         elif da == 2:
-            grad = 'Enkel' if gB == 'M' else 'Enkelin'
+            grad = 'Enkel' if gA == 'M' else 'Enkelin'
         elif da == 3:
-            grad = 'Urenkel' if gB == 'M' else 'Urenkelin'
+            grad = 'Urenkel' if gA == 'M' else 'Urenkelin'
         else:
             grad = f'Nachfahre ({da} Generationen)'
     elif da == 1 and db == 1:
         grad = 'Geschwister'
-    elif da == 1 and db == 2:
-        grad = 'Nichte' if gB == 'F' else 'Neffe'
-    elif da == 2 and db == 1:
-        grad = 'Tante' if gA == 'F' else 'Onkel'
-    elif da == 1 and db >= 3:
-        grad = f'Großnichte/-neffe ({db - 1}× groß)'
-    elif da >= 3 and db == 1:
-        grad = f'Großtante/-onkel ({da - 1}× groß)'
+    elif min(da, db) == 1:
+        # Einer ist direktes Kind des LCA → Onkel/Tante- oder Neffe/Nichte-Linie
+        # n_grosz: 0=Onkel/Tante, 1=Groß-, 2=2×Groß-, ...
+        n_grosz = max(da, db) - 2   # da=1,db=2 → 0; da=1,db=3 → 1; da=3,db=1 → 1
+        if da < db:
+            # A näher am Vorfahren → A ist Onkel/Tante-Seite
+            grad = onkel_tante(gA, n_grosz)
+        else:
+            # A weiter vom Vorfahren → A ist Neffe/Nichte-Seite
+            grad = nichte_neffe(gA, n_grosz)
     else:
-        # Cousins: min(da,db) - 1 = Grad, |da-db| = Entfernung
+        # Cousins: min(da,db)-1 = Grad, |da-db| = Entfernung
         grad_zahl = min(da, db) - 1
-        entfernt = abs(da - db)
-        grad = cousin_name(grad_zahl, entfernt, gB)
+        entfernt  = abs(da - db)
+        grad = cousin_name(grad_zahl, entfernt, gA)   # gA: A's Geschlecht
 
+    # Generationsabstand = Nettoabstand auf der Zeitachse (|da - db|)
+    # Pfadlänge         = Gesamtzahl der Eltern-Kind-Schritte (da + db)
+    gen_abstand = abs(da - db)
     beschreibung = (
         f'{person_a.vollname} ist {grad} von {person_b.vollname}'
         + (f' — gemeinsamer Vorfahre: {lca.vollname}' if da > 0 and db > 0 else '')
-        + f' (Abstand: {da}+{db} = {da+db} Generationen).'
+        + f' (Generationsabstand: {gen_abstand}, Pfadlänge: {da}↑+{db}↓={da+db}).'
     )
 
     return JsonResponse({

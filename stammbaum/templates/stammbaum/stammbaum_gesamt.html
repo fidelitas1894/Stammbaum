@@ -2,75 +2,44 @@
 {% block title %}Gesamter Stammbaum{% endblock %}
 {% block extra_css %}
 <style>
-#graph-container {
-    width: 100%;
-    height: 82vh;
-    background: #fff;
-    border-radius: 8px;
-    overflow: hidden;
-    position: relative;
+#graph-wrap {
+    width: 100%; height: 84vh;
+    background: linear-gradient(160deg, #f0f4f8 0%, #e8edf4 100%);
+    border-radius: 12px; overflow: hidden; position: relative;
     cursor: grab;
+    box-shadow: 0 2px 12px rgba(0,0,0,.08), inset 0 1px 0 rgba(255,255,255,.7);
 }
-#graph-container:active { cursor: grabbing; }
-
-.node circle {
-    stroke-width: 2px;
-    cursor: pointer;
-    transition: opacity 0.1s;
-}
-.node circle:hover { opacity: 0.7; }
-.node.M circle { fill: #cce5ff; stroke: #4a90c4; }
-.node.F circle { fill: #fce4ec; stroke: #c4607a; }
-.node.U circle { fill: #eee;    stroke: #888; }
-.node text {
-    font-size: 11px;
-    font-family: system-ui, sans-serif;
-    pointer-events: none;
-    fill: #333;
-}
-.node .name  { font-weight: 600; }
-.node .dates { fill: #888; font-size: 10px; }
-
-.link {
-    fill: none;
-    stroke: #bbb;
-    stroke-width: 1.5px;
-    stroke-opacity: 0.6;
-}
-
+#graph-wrap:active { cursor: grabbing; }
+.node-card { cursor: pointer; }
+.node-card:hover .node-bg { opacity: .82; }
+.link-path { fill:none; stroke:#94a3b8; stroke-width:1.5; stroke-opacity:.45; stroke-linecap:round; }
+.couple-bar { stroke:#f59e0b; stroke-width:2.5; stroke-opacity:.75; stroke-linecap:round; }
+.node-name  { font:700 11.5px/1 system-ui,sans-serif; fill:#1e293b; pointer-events:none; }
+.node-dates { font:10px/1 system-ui,sans-serif; fill:#64748b; pointer-events:none; }
 #tooltip {
-    position: absolute;
-    background: #fff;
-    border: 1px solid #ccc;
-    border-radius: 6px;
-    padding: 8px 12px;
-    font-size: 13px;
-    pointer-events: none;
-    display: none;
-    z-index: 10;
-    box-shadow: 0 2px 8px rgba(0,0,0,.15);
-    max-width: 220px;
+    position:absolute; background:rgba(15,23,42,.88); color:#f1f5f9;
+    border-radius:8px; padding:8px 14px; font-size:13px; pointer-events:none;
+    display:none; z-index:10; box-shadow:0 4px 20px rgba(0,0,0,.3);
+    max-width:230px; line-height:1.4;
 }
-
 #stats-badge {
-    position: absolute;
-    top: 12px; left: 12px;
-    background: rgba(255,255,255,.92);
-    border-radius: 6px;
-    padding: 6px 12px;
-    font-size: 12px;
-    color: #555;
-    border: 1px solid #ddd;
-    pointer-events: none;
-    z-index: 5;
+    position:absolute; top:14px; left:14px;
+    background:rgba(255,255,255,.9); border-radius:8px; padding:6px 14px;
+    font-size:12px; color:#475569; border:1px solid rgba(148,163,184,.3);
+    pointer-events:none; z-index:5; box-shadow:0 1px 4px rgba(0,0,0,.08);
 }
-
+#legend {
+    position:absolute; bottom:14px; right:14px;
+    background:rgba(255,255,255,.9); border-radius:8px; padding:6px 12px;
+    font-size:11px; color:#475569; border:1px solid rgba(148,163,184,.3);
+    pointer-events:none; z-index:5; box-shadow:0 1px 4px rgba(0,0,0,.08);
+    display:flex; gap:10px; align-items:center;
+}
+.lsw { width:24px; height:16px; border-radius:4px; display:inline-block;
+        vertical-align:middle; margin-right:3px; border:1.5px solid; }
 #loading {
-    position: absolute;
-    top: 50%; left: 50%;
-    transform: translate(-50%,-50%);
-    font-size: 14px;
-    color: #888;
+    position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+    font-size:14px; color:#64748b; z-index:20;
 }
 </style>
 {% endblock %}
@@ -79,7 +48,7 @@
 <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
     <div>
         <h1 class="mb-0"><i class="bi bi-diagram-3-fill me-2"></i>Gesamter Stammbaum</h1>
-        <div class="text-muted small mt-1">Alle Personen, nach Generationen geordnet</div>
+        <div class="text-muted small mt-1">Alle Personen · ältere Generationen oben</div>
     </div>
     <div class="d-flex gap-2 flex-wrap align-items-center">
         <div class="form-check form-switch mb-0">
@@ -95,166 +64,303 @@
     </div>
 </div>
 
-<div class="card p-0">
-    <div id="graph-container">
+<div class="card p-0 border-0" style="border-radius:12px;overflow:hidden;">
+    <div id="graph-wrap">
         <div id="stats-badge">Lädt…</div>
         <div id="loading"><span class="spinner-border spinner-border-sm me-2"></span>Berechne Layout…</div>
         <div id="tooltip"></div>
+        <div id="legend">
+            <span><span class="lsw" style="background:#dbeafe;border-color:#3b82f6"></span>♂ Männlich</span>
+            <span><span class="lsw" style="background:#fce7f3;border-color:#ec4899"></span>♀ Weiblich</span>
+            <span><span class="lsw" style="background:#f1f5f9;border-color:#94a3b8"></span>Unbekannt</span>
+            <span style="color:#b45309"><span style="border-bottom:2.5px solid #f59e0b;display:inline-block;width:18px;margin-right:4px;vertical-align:middle"></span>Ehepaar</span>
+        </div>
         <svg id="svg-graph" width="100%" height="100%"></svg>
     </div>
 </div>
-<div class="text-muted small mt-2 d-flex gap-3 flex-wrap">
-    <span><i class="bi bi-info-circle me-1"></i>Mausrad = Zoom &middot; Ziehen = Schwenken &middot; Klick = Person öffnen</span>
-    <span>
-        <span class="badge" style="background:#cce5ff;color:#333;border:1px solid #4a90c4">♂</span>
-        <span class="badge ms-1" style="background:#fce4ec;color:#333;border:1px solid #c4607a">♀</span>
-        <span class="badge ms-1" style="background:#eee;color:#333;border:1px solid #888">?</span>
-        &nbsp;Ältere Generation oben
-    </span>
+<div class="text-muted small mt-2">
+    <i class="bi bi-info-circle me-1"></i>Mausrad = Zoom · Ziehen = Schwenken · Klick öffnet Profil
 </div>
 {% endblock %}
 
 {% block extra_js %}
 <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
 <script>
-const container = document.getElementById('graph-container');
-const W = container.clientWidth;
-const H = container.clientHeight;
+// ─── Layout constants ───────────────────────────────────────────────────────
+const NW = 150, NH = 50, NR = 9;   // node width / height / corner-radius
+const HGAP = 20;   // gap between separate node units
+const CGAP = 14;   // gap between the two cards of a couple
+const GEN_H = 128; // vertical distance between generation rows
+
+const wrap = document.getElementById('graph-wrap');
+const W = wrap.clientWidth, H = wrap.clientHeight;
 
 const svg = d3.select('#svg-graph');
-const zoom = d3.zoom().scaleExtent([0.03, 4]).on('zoom', e => g.attr('transform', e.transform));
+
+// ─── SVG defs ───────────────────────────────────────────────────────────────
+const defs = svg.append('defs');
+
+function addGrad(id, c1, c2) {
+    const g = defs.append('linearGradient').attr('id', id)
+        .attr('x1','0%').attr('y1','0%').attr('x2','0%').attr('y2','100%');
+    g.append('stop').attr('offset','0%').attr('stop-color', c1);
+    g.append('stop').attr('offset','100%').attr('stop-color', c2);
+}
+addGrad('grad-m','#eff6ff','#dbeafe');
+addGrad('grad-f','#fdf2f8','#fce7f3');
+addGrad('grad-u','#f8fafc','#f1f5f9');
+
+const flt = defs.append('filter').attr('id','shadow')
+    .attr('x','-20%').attr('y','-20%').attr('width','140%').attr('height','160%');
+flt.append('feDropShadow').attr('dx',0).attr('dy',1).attr('stdDeviation',2)
+    .attr('flood-color','rgba(0,0,0,.10)');
+
+// ─── Zoom / pan ─────────────────────────────────────────────────────────────
+const zoom = d3.zoom().scaleExtent([0.04, 4])
+    .on('zoom', e => root.attr('transform', e.transform));
 svg.call(zoom);
-const g = svg.append('g');
+const root = svg.append('g');
 
-let labelGroup = null;
-let showNamen = true;
+let labelGroup = null, showNamen = true;
 
+// ─── Helper ─────────────────────────────────────────────────────────────────
+const nodeColor = g => g === 'M' ? '#3b82f6' : g === 'F' ? '#ec4899' : '#94a3b8';
+const nodeFill  = g => `url(#grad-${g === 'M' ? 'm' : g === 'F' ? 'f' : 'u'})`;
+
+// ─── Fetch & layout ─────────────────────────────────────────────────────────
 fetch('/api/stammbaum/gesamt/')
     .then(r => r.json())
     .then(({ nodes, links }) => {
         document.getElementById('loading').style.display = 'none';
+        if (!nodes.length) {
+            document.getElementById('stats-badge').textContent = 'Keine Personen vorhanden';
+            return;
+        }
 
-        // ── 1. Build adjacency ──────────────────────────────────────────────
-        const nodeById  = new Map(nodes.map(n => [n.id, n]));
-        const parentsOf = new Map(nodes.map(n => [n.id, []]));
-        const childrenOf= new Map(nodes.map(n => [n.id, []]));
-
+        const byId    = new Map(nodes.map(n => [n.id, n]));
+        const kidsOf  = new Map(nodes.map(n => [n.id, []]));
+        const parsOf  = new Map(nodes.map(n => [n.id, []]));
         links.forEach(l => {
-            childrenOf.get(l.source)?.push(l.target);
-            parentsOf.get(l.target)?.push(l.source);
+            kidsOf.get(l.source)?.push(l.target);
+            parsOf.get(l.target)?.push(l.source);
         });
 
-        // ── 2. Assign generation via BFS from roots ─────────────────────────
-        const generation = new Map();
-        const roots = nodes.filter(n => parentsOf.get(n.id).length === 0);
-        const queue  = roots.map(n => n.id);
-        roots.forEach(n => generation.set(n.id, 0));
-
-        while (queue.length) {
-            const id  = queue.shift();
-            const gen = generation.get(id);
-            childrenOf.get(id).forEach(cid => {
-                if (!generation.has(cid) || generation.get(cid) < gen + 1) {
-                    generation.set(cid, gen + 1);
-                    queue.push(cid);
+        // ── 1. Generation assignment (BFS, max-depth so children ≥ parent+1) ──
+        const gen = new Map();
+        const roots = nodes.filter(n => parsOf.get(n.id).length === 0);
+        roots.forEach(n => gen.set(n.id, 0));
+        const bq = roots.map(n => n.id);
+        while (bq.length) {
+            const id = bq.shift(), g0 = gen.get(id);
+            kidsOf.get(id).forEach(cid => {
+                if (!gen.has(cid) || gen.get(cid) < g0 + 1) {
+                    gen.set(cid, g0 + 1);
+                    bq.push(cid);
                 }
             });
         }
-        nodes.forEach(n => { if (!generation.has(n.id)) generation.set(n.id, 0); });
+        nodes.forEach(n => { if (!gen.has(n.id)) gen.set(n.id, 0); });
 
-        const maxGen   = Math.max(...generation.values());
-        const GEN_H    = Math.min(130, (H * 0.85) / (maxGen + 1));
+        const maxG = Math.max(...gen.values());
+        const gens = Array.from({length: maxG + 1}, () => []);
+        nodes.forEach(n => gens[gen.get(n.id)].push(n));
 
-        // ── 3. Group by generation and set initial positions ────────────────
-        const genGroups = Array.from({ length: maxGen + 1 }, () => []);
-        nodes.forEach(n => genGroups[generation.get(n.id)].push(n));
+        // ── 2. Bottom-up x layout ─────────────────────────────────────────────
+        // Process from youngest (maxG) upward to oldest (0).
+        // At each level: detect couples, sort as units, place trying to center
+        // each unit over its children.  Forward + backward pass resolve overlaps.
 
-        // Spread each generation evenly as starting positions
-        genGroups.forEach((grp, gi) => {
-            const spacing = Math.max(120, W / (grp.length + 1));
-            grp.forEach((n, i) => {
-                n.x  = (i - (grp.length - 1) / 2) * spacing;
-                n.y  = gi * GEN_H;
-                n.fy = n.y;   // PIN Y to generation row
+        const coupleData = []; // for drawing marriage connectors later
+
+        for (let g0 = maxG; g0 >= 0; g0--) {
+            const grpNodes = gens[g0];
+
+            // Ideal x = average x of all DIRECT children (any deeper generation)
+            grpNodes.forEach(n => {
+                const xs = kidsOf.get(n.id)
+                    .filter(cid => gen.get(cid) > g0)
+                    .map(cid => byId.get(cid)).filter(Boolean)
+                    .map(c => c.x).filter(x => x !== undefined);
+                n._ix = xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
             });
-        });
 
-        // ── 4. Force simulation (X only — Y is pinned) ─────────────────────
-        const sim = d3.forceSimulation(nodes)
-            .force('link', d3.forceLink(links)
-                .id(d => d.id)
-                .distance(GEN_H * 1.4)
-                .strength(0.25))
-            .force('charge', d3.forceManyBody().strength(-250))
-            .force('x-center', d3.forceX(0).strength(0.04))
-            .force('collision', d3.forceCollide(52))
-            .alphaDecay(0.025)
-            .velocityDecay(0.5);
+            // Couple detection: two nodes in gen g0 that share a direct child
+            const partnerOf = new Map(); // id → partnerId
+            grpNodes.forEach(n => {
+                if (partnerOf.has(n.id)) return;
+                for (const cid of kidsOf.get(n.id)) {
+                    if (gen.get(cid) <= g0) continue;
+                    for (const pid of parsOf.get(cid)) {
+                        if (pid !== n.id && gen.get(pid) === g0 &&
+                            !partnerOf.has(pid) && byId.has(pid)) {
+                            partnerOf.set(n.id, pid);
+                            partnerOf.set(pid, n.id);
+                            break;
+                        }
+                    }
+                    if (partnerOf.has(n.id)) break;
+                }
+            });
 
-        // ── 5. Draw links ───────────────────────────────────────────────────
-        const linkSel = g.append('g').attr('class', 'links')
-            .selectAll('line').data(links).enter().append('line')
-            .attr('class', 'link');
+            // Build units: couple (2 nodes) or single (1 node)
+            const units = [];
+            const done  = new Set();
+            const sorted = [...grpNodes].sort((a, b) => {
+                const d = (a._ix ?? 1e9) - (b._ix ?? 1e9);
+                return d !== 0 ? d : a.name.localeCompare(b.name);
+            });
 
-        // ── 6. Draw nodes ───────────────────────────────────────────────────
-        const nodeSel = g.append('g').attr('class', 'nodes')
-            .selectAll('.node').data(nodes).enter().append('g')
-            .attr('class', d => `node ${d.geschlecht}`)
-            .on('click', (e, d) => { window.location.href = d.url; })
+            for (const n of sorted) {
+                if (done.has(n.id)) continue;
+                done.add(n.id);
+                const pid = partnerOf.get(n.id);
+                if (pid && !done.has(pid)) {
+                    done.add(pid);
+                    const partner = byId.get(pid);
+                    // ♂ on left, ♀ on right (or preserve order)
+                    const [L, R] = (n.geschlecht === 'M' || partner.geschlecht === 'F')
+                        && n.geschlecht !== partner.geschlecht
+                        ? [n, partner] : [n, partner];
+                    const ixs = [L._ix, R._ix].filter(x => x != null);
+                    units.push({
+                        nodes: [L, R],
+                        ix: ixs.length ? ixs.reduce((a,b)=>a+b)/ixs.length : null,
+                        w: NW * 2 + CGAP,
+                        couple: true,
+                    });
+                } else {
+                    units.push({ nodes:[n], ix:n._ix, w:NW, couple:false });
+                }
+            }
+
+            // Sort units by their ideal x
+            units.sort((a, b) => (a.ix ?? 1e9) - (b.ix ?? 1e9));
+
+            // Initial center: use idealX if available, else sequential fallback
+            units.forEach((u, i) => {
+                u._c = u.ix ?? (i > 0
+                    ? units[i-1]._c + (units[i-1].w + u.w) / 2 + HGAP
+                    : 0);
+            });
+
+            // Forward pass: push right to ensure minimum gap
+            for (let i = 1; i < units.length; i++) {
+                const need = units[i-1]._c + (units[i-1].w + units[i].w) / 2 + HGAP;
+                if (units[i]._c < need) units[i]._c = need;
+            }
+            // Backward pass: pull left where there is room (toward idealX)
+            for (let i = units.length - 2; i >= 0; i--) {
+                const cap = units[i+1]._c - (units[i+1].w + units[i].w) / 2 - HGAP;
+                if (units[i]._c > cap) units[i]._c = cap;
+            }
+
+            // Apply positions and record couple segments
+            units.forEach(u => {
+                if (u.couple) {
+                    u.nodes[0].x = u._c - (CGAP + NW) / 2;  // left partner center
+                    u.nodes[1].x = u._c + (CGAP + NW) / 2;  // right partner center
+                    coupleData.push({
+                        x1: u.nodes[0].x + NW / 2,   // right edge of left card
+                        x2: u.nodes[1].x - NW / 2,   // left edge of right card
+                        y:  0,  // y assigned below
+                        u,
+                    });
+                } else {
+                    u.nodes[0].x = u._c;
+                }
+            });
+
+            // Assign y (constant per generation)
+            grpNodes.forEach(n => { n.y = g0 * GEN_H; });
+        }
+
+        // Set couple connector y now that y is assigned
+        coupleData.forEach(c => { c.y = c.u.nodes[0].y; });
+
+        // Center entire graph around x = 0
+        const allX = nodes.map(n => n.x).filter(x => x !== undefined);
+        const xOff = (Math.min(...allX) + Math.max(...allX)) / 2;
+        nodes.forEach(n => { n.x -= xOff; });
+        coupleData.forEach(c => { c.x1 -= xOff; c.x2 -= xOff; });
+
+        // ── 3. Draw ───────────────────────────────────────────────────────────
+
+        // Parent → child bezier curves (bottom-center of parent → top-center of child)
+        root.append('g').selectAll('path').data(links).enter().append('path')
+            .attr('class', 'link-path')
+            .attr('d', d => {
+                const s = byId.get(d.source), t = byId.get(d.target);
+                if (!s || !t || s.x === undefined || t.x === undefined) return '';
+                const sy = s.y + NH / 2, ty = t.y - NH / 2, cy = (sy + ty) / 2;
+                return `M${s.x},${sy} C${s.x},${cy} ${t.x},${cy} ${t.x},${ty}`;
+            });
+
+        // Couple marriage bars
+        root.append('g').selectAll('line').data(coupleData).enter().append('line')
+            .attr('class', 'couple-bar')
+            .attr('x1', d => d.x1).attr('y1', d => d.y)
+            .attr('x2', d => d.x2).attr('y2', d => d.y);
+
+        // Node groups
+        const nodeSel = root.append('g').selectAll('.node-card').data(nodes).enter()
+            .append('g').attr('class', 'node-card')
+            .attr('transform', d => `translate(${d.x},${d.y})`)
+            .on('click',     (e, d) => window.location.href = d.url)
             .on('mouseover', (e, d) => {
                 const tt = document.getElementById('tooltip');
                 tt.innerHTML = `<strong>${d.name}</strong>`
-                    + (d.lebensdaten ? `<br><span class="text-muted">${d.lebensdaten}</span>` : '');
+                    + (d.lebensdaten ? `<br><span style="opacity:.75">${d.lebensdaten}</span>` : '');
                 tt.style.display = 'block';
             })
             .on('mousemove', e => {
                 const tt = document.getElementById('tooltip');
-                const rect = container.getBoundingClientRect();
-                let x = e.clientX - rect.left + 14;
-                let y = e.clientY - rect.top - 10;
-                if (x + 220 > rect.width) x -= 244;
-                tt.style.left = x + 'px';
-                tt.style.top  = y + 'px';
+                const r = wrap.getBoundingClientRect();
+                let x = e.clientX - r.left + 16, y = e.clientY - r.top - 12;
+                if (x + 230 > r.width) x -= 254;
+                tt.style.left = x + 'px'; tt.style.top = y + 'px';
             })
             .on('mouseout', () => { document.getElementById('tooltip').style.display = 'none'; });
 
-        nodeSel.append('circle').attr('r', 13);
+        // Card background
+        nodeSel.append('rect').attr('class','node-bg')
+            .attr('width', NW).attr('height', NH).attr('rx', NR).attr('ry', NR)
+            .attr('x', -NW/2).attr('y', -NH/2)
+            .attr('filter','url(#shadow)')
+            .attr('fill',   d => nodeFill(d.geschlecht))
+            .attr('stroke', d => nodeColor(d.geschlecht))
+            .attr('stroke-width', 1.5);
 
-        nodeSel.append('text')
-            .attr('text-anchor', 'middle').attr('dy', '0.35em').attr('font-size', '11px')
-            .style('pointer-events', 'none')
-            .text(d => d.geschlecht === 'M' ? '♂' : d.geschlecht === 'F' ? '♀' : '?')
-            .style('fill', d => d.geschlecht === 'M' ? '#1a5a8e' : d.geschlecht === 'F' ? '#8e2a42' : '#555');
+        // Gender accent line on left edge
+        nodeSel.append('line')
+            .attr('x1', -NW/2 + 4).attr('y1', -NH/2 + NR)
+            .attr('x2', -NW/2 + 4).attr('y2',  NH/2 - NR)
+            .attr('stroke', d => nodeColor(d.geschlecht))
+            .attr('stroke-width', 5).attr('stroke-linecap','round')
+            .style('pointer-events','none');
 
-        labelGroup = nodeSel.append('g').attr('class', 'label');
-        labelGroup.append('text').attr('class', 'name').attr('x', 17).attr('dy', '-0.1em')
-            .text(d => d.name.length > 18 ? d.name.substr(0, 16) + '…' : d.name);
-        labelGroup.append('text').attr('class', 'dates').attr('x', 17).attr('dy', '1.1em')
+        // Labels
+        labelGroup = nodeSel.append('g').attr('class','labels');
+        labelGroup.append('text').attr('class','node-name')
+            .attr('text-anchor','middle').attr('x', 3)
+            .attr('y', d => d.lebensdaten ? -6 : 4)
+            .text(d => d.name.length > 19 ? d.name.slice(0,17)+'…' : d.name);
+        labelGroup.append('text').attr('class','node-dates')
+            .attr('text-anchor','middle').attr('x', 3).attr('y', 10)
             .text(d => d.lebensdaten);
 
-        // ── 7. Tick ─────────────────────────────────────────────────────────
-        sim.on('tick', () => {
-            linkSel
-                .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
-                .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
-            nodeSel.attr('transform', d => `translate(${d.x},${d.y})`);
-        });
-
-        // Auto-fit once simulation settles
-        sim.on('end', fitView);
-        setTimeout(fitView, 2500);
+        fitView();
 
         document.getElementById('stats-badge').textContent =
-            `${nodes.length} Personen · ${links.length} Verbindungen · ${maxGen + 1} Generationen`;
+            `${nodes.length} Personen · ${links.length} Verbindungen · ${maxG + 1} Generationen`;
     });
 
 function fitView() {
     try {
-        const bounds = g.node().getBBox();
-        if (!bounds.width) return;
-        const scale = Math.min(1, (W - 60) / bounds.width, (H - 60) / bounds.height);
-        const tx = (W - bounds.width * scale) / 2 - bounds.x * scale;
-        const ty = (H - bounds.height * scale) / 2 - bounds.y * scale;
+        const b = root.node().getBBox();
+        if (!b.width) return;
+        const scale = Math.min(1, (W - 80) / b.width, (H - 80) / b.height);
+        const tx = (W - b.width  * scale) / 2 - b.x * scale;
+        const ty = (H - b.height * scale) / 2 - b.y * scale;
         svg.transition().duration(600)
            .call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
     } catch(e) {}
@@ -264,7 +370,6 @@ document.getElementById('toggleNamen').addEventListener('change', function() {
     showNamen = this.checked;
     if (labelGroup) labelGroup.style('display', showNamen ? null : 'none');
 });
-
 document.getElementById('btnZentrieren').addEventListener('click', fitView);
 </script>
 {% endblock %}

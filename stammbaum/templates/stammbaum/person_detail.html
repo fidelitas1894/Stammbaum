@@ -1,5 +1,12 @@
 {% extends "stammbaum/base.html" %}
 {% block title %}{{ person.vollname }}{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+#mini-map { height: 260px; border-radius: 8px; }
+.ort-row { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+</style>
+{% endblock %}
 {% block content %}
 <nav aria-label="breadcrumb" class="mb-3">
     <ol class="breadcrumb">
@@ -139,6 +146,64 @@
         </div>
     </div>
 
+    <!-- Orte & Koordinaten -->
+    {% if person.geburtsort or person.sterbeort %}
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <strong><i class="bi bi-geo-alt me-1"></i>Orte</strong>
+                {% if user.is_authenticated %}
+                <button class="btn btn-outline-secondary btn-sm" id="btnOrtEdit">
+                    <i class="bi bi-pencil me-1"></i>Koordinaten bearbeiten
+                </button>
+                {% endif %}
+            </div>
+            <div class="card-body">
+                <div class="row g-2 mb-3">
+                    {% if person.geburtsort %}
+                    <div class="col-sm-6">
+                        <div class="ort-row">
+                            <i class="bi bi-geo-alt-fill text-success"></i>
+                            <span>{{ person.geburtsort }}</span>
+                            <span class="badge bg-light text-muted border small" id="coord-geburtsort">…</span>
+                        </div>
+                    </div>
+                    {% endif %}
+                    {% if person.sterbeort %}
+                    <div class="col-sm-6">
+                        <div class="ort-row">
+                            <i class="bi bi-geo-alt-fill text-danger"></i>
+                            <span>{{ person.sterbeort }}</span>
+                            <span class="badge bg-light text-muted border small" id="coord-sterbeort">…</span>
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+
+                {% if user.is_authenticated %}
+                <div id="ort-edit-bar" class="d-none mb-3 p-2 bg-light rounded border d-flex gap-2 flex-wrap align-items-center">
+                    <label class="mb-0 small fw-semibold">Ort:</label>
+                    <select class="form-select form-select-sm" id="ort-auswahl" style="width:auto">
+                        {% if person.geburtsort %}<option value="geburtsort" data-ort="{{ person.geburtsort }}">Geburtsort: {{ person.geburtsort }}</option>{% endif %}
+                        {% if person.sterbeort %}<option value="sterbeort" data-ort="{{ person.sterbeort }}">Sterbeort: {{ person.sterbeort }}</option>{% endif %}
+                    </select>
+                    <span class="text-muted small">→ Marker ziehen oder Karte klicken</span>
+                    <button class="btn btn-sm btn-outline-info" id="btnNeuGeocode">
+                        <i class="bi bi-arrow-clockwise me-1"></i>Nominatim
+                    </button>
+                    <button class="btn btn-sm btn-primary" id="btnOrtSave">
+                        <i class="bi bi-check-lg me-1"></i>Speichern
+                    </button>
+                    <button class="btn btn-sm btn-outline-secondary" id="btnOrtCancel">Abbrechen</button>
+                </div>
+                {% endif %}
+
+                <div id="mini-map"></div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
     <!-- Stammbaum-Link -->
     <div class="col-12">
         <a href="{% url 'stammbaum' %}?person={{ person.pk }}" class="btn btn-outline-secondary me-2">
@@ -186,3 +251,192 @@
     {% endif %}
 </div>
 {% endblock %}
+
+{% if person.geburtsort or person.sterbeort %}
+{% block extra_js %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const ORTE = {
+    {% if person.geburtsort %}'geburtsort': { ort: '{{ person.geburtsort|escapejs }}', color: '#2ecc71' },{% endif %}
+    {% if person.sterbeort %}'sterbeort': { ort: '{{ person.sterbeort|escapejs }}', color: '#e74c3c' },{% endif %}
+};
+
+const map = L.map('mini-map').setView([51.0, 10.0], 5);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap'
+}).addTo(map);
+
+const markers = {};
+const pendingCoords = {};
+let editMode = false;
+let activeKey = null;
+
+function makeIcon(color) {
+    return L.divIcon({
+        html: `<div style="width:14px;height:14px;border-radius:50%;background:${color};border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5)"></div>`,
+        className: '', iconSize: [14, 14], iconAnchor: [7, 7],
+    });
+}
+
+function formatCoord(lat, lon) {
+    return (lat != null && lon != null) ? `${lat.toFixed(4)}, ${lon.toFixed(4)}` : 'keine Koordinaten';
+}
+
+async function loadOrt(key) {
+    const { ort, color } = ORTE[key];
+    const coordEl = document.getElementById(`coord-${key}`);
+    try {
+        const r = await fetch(`/api/geocode/${encodeURIComponent(ort)}/`);
+        const d = await r.json();
+        pendingCoords[key] = { lat: d.lat, lon: d.lon };
+        if (coordEl) coordEl.textContent = formatCoord(d.lat, d.lon);
+        if (d.lat && d.lon) {
+            const m = L.marker([d.lat, d.lon], { icon: makeIcon(color), draggable: false })
+                .bindPopup(`<strong>${ort}</strong>`)
+                .addTo(map);
+            markers[key] = m;
+            m.on('dragend', e => {
+                const ll = e.target.getLatLng();
+                pendingCoords[key] = { lat: ll.lat, lon: ll.lng };
+            });
+        }
+    } catch(e) {
+        if (coordEl) coordEl.textContent = 'Fehler';
+    }
+}
+
+(async () => {
+    for (const key of Object.keys(ORTE)) await loadOrt(key);
+    const pts = Object.values(markers).map(m => m.getLatLng());
+    if (pts.length > 1) map.fitBounds(pts.map(p => [p.lat, p.lng]), { padding: [40, 40] });
+    else if (pts.length === 1) map.setView(pts[0], 10);
+})();
+
+{% if user.is_authenticated %}
+const btnEdit   = document.getElementById('btnOrtEdit');
+const btnSave   = document.getElementById('btnOrtSave');
+const btnCancel = document.getElementById('btnOrtCancel');
+const btnGeo    = document.getElementById('btnNeuGeocode');
+const editBar   = document.getElementById('ort-edit-bar');
+const ortSelect = document.getElementById('ort-auswahl');
+
+function enterEditMode() {
+    editMode = true;
+    editBar.classList.remove('d-none');
+    editBar.classList.add('d-flex');
+    btnEdit.classList.add('d-none');
+    activeKey = ortSelect.value;
+    setDraggable(activeKey, true);
+    map.on('click', onMapClick);
+}
+
+function leaveEditMode() {
+    editMode = false;
+    editBar.classList.add('d-none');
+    editBar.classList.remove('d-flex');
+    btnEdit.classList.remove('d-none');
+    for (const k of Object.keys(markers)) setDraggable(k, false);
+    map.off('click', onMapClick);
+}
+
+function setDraggable(key, draggable) {
+    if (markers[key]) {
+        if (draggable) markers[key].dragging.enable();
+        else markers[key].dragging.disable();
+    }
+}
+
+ortSelect.addEventListener('change', function() {
+    if (!editMode) return;
+    setDraggable(activeKey, false);
+    activeKey = this.value;
+    setDraggable(activeKey, true);
+});
+
+function onMapClick(e) {
+    if (!editMode || !activeKey) return;
+    const { lat, lng } = e.latlng;
+    pendingCoords[activeKey] = { lat, lon: lng };
+    const { color } = ORTE[activeKey];
+    if (markers[activeKey]) {
+        markers[activeKey].setLatLng([lat, lng]);
+    } else {
+        const m = L.marker([lat, lng], { icon: makeIcon(color), draggable: true }).addTo(map);
+        m.on('dragend', ev => {
+            const ll = ev.target.getLatLng();
+            pendingCoords[activeKey] = { lat: ll.lat, lon: ll.lng };
+        });
+        markers[activeKey] = m;
+    }
+}
+
+btnEdit.addEventListener('click', enterEditMode);
+btnCancel.addEventListener('click', leaveEditMode);
+
+btnSave.addEventListener('click', async () => {
+    const key = ortSelect.value;
+    const c = pendingCoords[key];
+    if (!c || c.lat == null) { alert('Bitte zuerst eine Position auf der Karte setzen.'); return; }
+    const ortName = ORTE[key].ort;
+    btnSave.disabled = true;
+    try {
+        const r = await fetch(`/api/ort/${encodeURIComponent(ortName)}/koordinaten/`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') },
+            body: JSON.stringify({ lat: c.lat, lon: c.lon }),
+        });
+        if (!r.ok) throw new Error('Fehler beim Speichern');
+        const d = await r.json();
+        const coordEl = document.getElementById(`coord-${key}`);
+        if (coordEl) coordEl.textContent = formatCoord(d.lat, d.lon);
+        leaveEditMode();
+    } catch(e) {
+        alert('Fehler beim Speichern: ' + e.message);
+    } finally {
+        btnSave.disabled = false;
+    }
+});
+
+btnGeo.addEventListener('click', async () => {
+    const key = ortSelect.value;
+    const ortName = ORTE[key].ort;
+    btnGeo.disabled = true;
+    btnGeo.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Lädt…';
+    try {
+        const r = await fetch(`/api/geocode/${encodeURIComponent(ortName)}/?force=1`);
+        const d = await r.json();
+        if (d.lat && d.lon) {
+            pendingCoords[key] = { lat: d.lat, lon: d.lon };
+            const { color } = ORTE[key];
+            if (markers[key]) {
+                markers[key].setLatLng([d.lat, d.lon]);
+            } else {
+                const m = L.marker([d.lat, d.lon], { icon: makeIcon(color), draggable: true }).addTo(map);
+                m.on('dragend', ev => {
+                    const ll = ev.target.getLatLng();
+                    pendingCoords[key] = { lat: ll.lat, lon: ll.lng };
+                });
+                markers[key] = m;
+            }
+            map.setView([d.lat, d.lon], 10);
+            const coordEl = document.getElementById(`coord-${key}`);
+            if (coordEl) coordEl.textContent = formatCoord(d.lat, d.lon);
+        } else {
+            alert('Kein Ergebnis von Nominatim für: ' + ortName);
+        }
+    } catch(e) {
+        alert('Geocodierung fehlgeschlagen.');
+    } finally {
+        btnGeo.disabled = false;
+        btnGeo.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Nominatim';
+    }
+});
+
+function getCookie(name) {
+    const m = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+    return m ? m.pop() : '';
+}
+{% endif %}
+</script>
+{% endblock %}
+{% endif %}

@@ -14,6 +14,7 @@ urlpatterns = [
     path('karte/', views.karte, name='karte'),
     path('api/karte/', views.karte_json, name='karte_json'),
     path('api/geocode/<str:ort_name>/', views.geocode_ort, name='geocode_ort'),
+    path('api/ort/<str:ort_name>/koordinaten/', views.ort_koordinaten_update, name='ort_koordinaten_update'),
     path('statistiken/', views.statistiken, name='statistiken'),
     path('suche/', views.suche, name='suche'),
     path('verwandtschaft/', views.verwandtschaft, name='verwandtschaft'),
