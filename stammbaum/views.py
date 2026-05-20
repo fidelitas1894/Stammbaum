@@ -704,3 +704,169 @@ def import_view(request):
         'import_output': import_output,
         'import_fehler': import_fehler,
     })
+
+
+# ---------------------------------------------------------------------------
+# Verwandtschaftsgrad
+# ---------------------------------------------------------------------------
+
+def verwandtschaft(request):
+    personen = Person.objects.all().order_by('nachname', 'vornamen')
+    return render(request, 'stammbaum/verwandtschaft.html', {'personen': personen})
+
+
+def verwandtschaft_api(request):
+    a_id = request.GET.get('a')
+    b_id = request.GET.get('b')
+    if not a_id or not b_id:
+        return JsonResponse({'error': 'Parameter a und b erforderlich'}, status=400)
+
+    try:
+        person_a = Person.objects.get(pk=int(a_id))
+        person_b = Person.objects.get(pk=int(b_id))
+    except (Person.DoesNotExist, ValueError):
+        return JsonResponse({'error': 'Person nicht gefunden'}, status=404)
+
+    def p_info(p):
+        return {'id': p.pk, 'name': p.vollname,
+                'lebensdaten': p.lebensdaten, 'url': p.get_absolute_url(),
+                'geschlecht': p.geschlecht}
+
+    if person_a.pk == person_b.pk:
+        return JsonResponse({
+            'gefunden': True,
+            'grad': 'Dieselbe Person',
+            'beschreibung': 'Beide Auswahlen zeigen auf dieselbe Person.',
+            'person_a': p_info(person_a),
+            'person_b': p_info(person_b),
+            'gemeinsamer_vorfahre': None,
+            'abstand_a': 0, 'abstand_b': 0,
+            'pfad_a': [p_info(person_a)],
+            'pfad_b': [p_info(person_b)],
+        })
+
+    # BFS upward from a given person; returns (dist_map, came_from)
+    def bfs_ancestors(start):
+        from collections import deque
+        dist = {start.pk: 0}
+        came_from = {start.pk: None}   # child_pk → parent_pk used
+        q = deque([start])
+        while q:
+            p = q.popleft()
+            try:
+                e = p.elternschaft_kind
+                for parent in filter(None, [e.vater, e.mutter]):
+                    if parent.pk not in dist:
+                        dist[parent.pk] = dist[p.pk] + 1
+                        came_from[parent.pk] = p.pk
+                        q.append(parent)
+            except Elternschaft.DoesNotExist:
+                pass
+        return dist, came_from
+
+    dist_a, came_a = bfs_ancestors(person_a)
+    dist_b, came_b = bfs_ancestors(person_b)
+
+    common = set(dist_a) & set(dist_b)
+    if not common:
+        return JsonResponse({
+            'gefunden': False,
+            'person_a': p_info(person_a),
+            'person_b': p_info(person_b),
+            'beschreibung': 'Keine bekannte Verwandtschaft — kein gemeinsamer Vorfahre gefunden.',
+        })
+
+    # Pick the closest common ancestor (minimum total hops)
+    lca_pk = min(common, key=lambda pk: dist_a[pk] + dist_b[pk])
+    lca = Person.objects.get(pk=lca_pk)
+    da = dist_a[lca_pk]
+    db = dist_b[lca_pk]
+
+    # Reconstruct path from start upward to lca.
+    # came_from_map[pk] = the child pk one step closer to start (BFS went upward,
+    # so came_from[ancestor] = the node below it toward start).
+    # Walk from lca down to start via came_from, then reverse.
+    def build_path(start_pk, lca_pk, came_from_map):
+        path = []
+        cur = lca_pk
+        while cur is not None:
+            path.append(cur)
+            if cur == start_pk:
+                break
+            cur = came_from_map.get(cur)
+        path.reverse()  # start_pk first, lca_pk last
+        return path
+
+    path_a_pks = build_path(person_a.pk, lca_pk, came_a)
+    path_b_pks = build_path(person_b.pk, lca_pk, came_b)
+
+    # Fetch all persons on both paths in one query
+    all_pks = list(set(path_a_pks + path_b_pks))
+    persons_map = {p.pk: p for p in Person.objects.filter(pk__in=all_pks)}
+
+    # Relationship naming
+    gA, gB = person_a.geschlecht, person_b.geschlecht
+
+    def cousin_name(grad, entfernt, g):
+        base = 'Cousin' if g == 'M' else 'Cousine'
+        s = f'{base} {grad}. Grades'
+        if entfernt:
+            s += f', {entfernt}× entfernt'
+        return s
+
+    if da == 0 and db == 0:
+        grad = 'Dieselbe Person'
+    elif da == 0:
+        # A ist Vorfahre von B
+        if db == 1:
+            grad = 'Vater' if gA == 'M' else 'Mutter'
+        elif db == 2:
+            grad = 'Großvater' if gA == 'M' else 'Großmutter'
+        elif db == 3:
+            grad = 'Urgroßvater' if gA == 'M' else 'Urgroßmutter'
+        else:
+            grad = f'Vorfahr ({db} Generationen)'
+    elif db == 0:
+        # B ist Vorfahre von A
+        if da == 1:
+            grad = 'Sohn' if gB == 'M' else 'Tochter'
+        elif da == 2:
+            grad = 'Enkel' if gB == 'M' else 'Enkelin'
+        elif da == 3:
+            grad = 'Urenkel' if gB == 'M' else 'Urenkelin'
+        else:
+            grad = f'Nachfahre ({da} Generationen)'
+    elif da == 1 and db == 1:
+        grad = 'Geschwister'
+    elif da == 1 and db == 2:
+        grad = 'Nichte' if gB == 'F' else 'Neffe'
+    elif da == 2 and db == 1:
+        grad = 'Tante' if gA == 'F' else 'Onkel'
+    elif da == 1 and db >= 3:
+        grad = f'Großnichte/-neffe ({db - 1}× groß)'
+    elif da >= 3 and db == 1:
+        grad = f'Großtante/-onkel ({da - 1}× groß)'
+    else:
+        # Cousins: min(da,db) - 1 = Grad, |da-db| = Entfernung
+        grad_zahl = min(da, db) - 1
+        entfernt = abs(da - db)
+        grad = cousin_name(grad_zahl, entfernt, gB)
+
+    beschreibung = (
+        f'{person_a.vollname} ist {grad} von {person_b.vollname}'
+        + (f' — gemeinsamer Vorfahre: {lca.vollname}' if da > 0 and db > 0 else '')
+        + f' (Abstand: {da}+{db} = {da+db} Generationen).'
+    )
+
+    return JsonResponse({
+        'gefunden': True,
+        'grad': grad,
+        'beschreibung': beschreibung,
+        'person_a': p_info(person_a),
+        'person_b': p_info(person_b),
+        'gemeinsamer_vorfahre': p_info(lca),
+        'abstand_a': da,
+        'abstand_b': db,
+        'pfad_a': [p_info(persons_map[pk]) for pk in path_a_pks],
+        'pfad_b': [p_info(persons_map[pk]) for pk in path_b_pks],
+    })

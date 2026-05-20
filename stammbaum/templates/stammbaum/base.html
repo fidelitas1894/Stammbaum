@@ -48,6 +48,7 @@
                 <li class="nav-item"><a class="nav-link" href="{% url 'karte' %}"><i class="bi bi-map me-1"></i>Karte</a></li>
                 <li class="nav-item"><a class="nav-link" href="{% url 'statistiken' %}"><i class="bi bi-bar-chart me-1"></i>Statistiken</a></li>
                 <li class="nav-item"><a class="nav-link" href="{% url 'suche' %}"><i class="bi bi-search me-1"></i>Suche</a></li>
+                <li class="nav-item"><a class="nav-link" href="{% url 'verwandtschaft' %}"><i class="bi bi-people-fill me-1"></i>Verwandtschaft</a></li>
             </ul>
             <ul class="navbar-nav ms-auto">
                 {% if user.is_authenticated %}

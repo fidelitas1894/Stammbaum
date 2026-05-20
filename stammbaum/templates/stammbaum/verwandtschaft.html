@@ -1,0 +1,272 @@
+{% extends "stammbaum/base.html" %}
+{% block title %}Verwandtschaftsgrad{% endblock %}
+{% block extra_css %}
+<style>
+.person-search-wrap { position: relative; }
+#searchDropdownA, #searchDropdownB {
+    position: absolute; top: 100%; left: 0; right: 0; z-index: 1000;
+    background: #fff; border: 1px solid #ccc; border-top: none;
+    border-radius: 0 0 6px 6px; max-height: 240px; overflow-y: auto;
+    box-shadow: 0 4px 12px rgba(0,0,0,.12); display: none;
+}
+.sd-item { padding: 7px 12px; cursor: pointer; font-size: 13px; border-bottom: 1px solid #f0f0f0; }
+.sd-item:last-child { border-bottom: none; }
+.sd-item:hover, .sd-item.active { background: #f5e6c8; }
+.sd-dates { font-size: 11px; color: #888; margin-left: 6px; }
+
+.pfad-box {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+    padding: 12px; background: #f8f5f0; border-radius: 8px;
+}
+.pfad-person {
+    background: #fff; border: 1px solid #ddd; border-radius: 6px;
+    padding: 4px 10px; font-size: 13px; text-decoration: none; color: #3d2b1f;
+    white-space: nowrap;
+}
+.pfad-person:hover { background: #f5e6c8; color: #3d2b1f; }
+.pfad-person.focal { border-color: #6b4c3b; font-weight: 700; }
+.pfad-person.lca { border-color: #e6a817; background: #fff8e7; font-weight: 700; }
+.pfad-arrow { color: #aaa; font-size: 18px; line-height: 1; }
+.pfad-arrow.down { transform: rotate(90deg); display: inline-block; }
+
+.grad-badge {
+    font-size: 1.4rem; font-weight: 700;
+    color: #6b4c3b;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<h1 class="mb-1"><i class="bi bi-people-fill me-2"></i>Verwandtschaftsgrad</h1>
+<p class="text-muted mb-4">Wähle zwei Personen aus — die App berechnet ihren Verwandtschaftsgrad und zeigt den Weg über den gemeinsamen Vorfahren.</p>
+
+<!-- Auswahl -->
+<div class="card mb-4">
+    <div class="card-body">
+        <div class="row g-3 align-items-end">
+            <div class="col-md-5">
+                <label class="form-label fw-semibold">Person A</label>
+                <div class="person-search-wrap">
+                    <input type="text" id="searchA" class="form-control" placeholder="Name eingeben…" autocomplete="off">
+                    <div id="searchDropdownA"></div>
+                </div>
+                <input type="hidden" id="idA">
+            </div>
+            <div class="col-md-5">
+                <label class="form-label fw-semibold">Person B</label>
+                <div class="person-search-wrap">
+                    <input type="text" id="searchB" class="form-control" placeholder="Name eingeben…" autocomplete="off">
+                    <div id="searchDropdownB"></div>
+                </div>
+                <input type="hidden" id="idB">
+            </div>
+            <div class="col-md-2">
+                <button id="btnBerechnen" class="btn btn-primary w-100" disabled>
+                    <i class="bi bi-search me-1"></i>Berechnen
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Ergebnis -->
+<div id="ergebnis" style="display:none"></div>
+
+<script>
+const PERSONEN = [
+    {% for p in personen %}
+    { id: {{ p.pk }}, name: "{{ p.vollname|escapejs }}", dates: "{% if p.lebensdaten %}{{ p.lebensdaten|escapejs }}{% endif %}" }{% if not forloop.last %},{% endif %}
+    {% endfor %}
+];
+
+function esc(s) {
+    return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function makeSearch(inputId, dropdownId, hiddenId) {
+    const inp = document.getElementById(inputId);
+    const dd  = document.getElementById(dropdownId);
+    const hid = document.getElementById(hiddenId);
+    let activeIdx = -1;
+
+    inp.addEventListener('input', () => {
+        hid.value = '';
+        checkBtn();
+        const q = inp.value.toLowerCase();
+        const hits = q ? PERSONEN.filter(p => p.name.toLowerCase().includes(q)).slice(0, 20) : [];
+        if (!hits.length) { dd.style.display = 'none'; return; }
+        dd.innerHTML = hits.map((p, i) =>
+            `<div class="sd-item" data-id="${p.id}" data-idx="${i}">
+                ${esc(p.name)}<span class="sd-dates">${esc(p.dates)}</span>
+            </div>`
+        ).join('');
+        dd.style.display = 'block';
+        activeIdx = -1;
+        dd.querySelectorAll('.sd-item').forEach(el =>
+            el.addEventListener('mousedown', e => { e.preventDefault(); select(el, hits); })
+        );
+    });
+
+    inp.addEventListener('keydown', e => {
+        const items = dd.querySelectorAll('.sd-item');
+        if (!items.length) return;
+        const q = inp.value.toLowerCase();
+        const hits = PERSONEN.filter(p => p.name.toLowerCase().includes(q)).slice(0, 20);
+        if (e.key === 'ArrowDown') { e.preventDefault(); activeIdx = Math.min(activeIdx+1, items.length-1); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); activeIdx = Math.max(activeIdx-1, 0); }
+        else if (e.key === 'Enter') {
+            e.preventDefault();
+            const active = dd.querySelector('.sd-item.active');
+            if (active) select(active, hits);
+            return;
+        } else if (e.key === 'Escape') { dd.style.display = 'none'; return; }
+        items.forEach((el, i) => el.classList.toggle('active', i === activeIdx));
+        if (items[activeIdx]) items[activeIdx].scrollIntoView({ block: 'nearest' });
+    });
+
+    inp.addEventListener('blur', () => setTimeout(() => { dd.style.display = 'none'; }, 150));
+
+    function select(el, hits) {
+        const idx = parseInt(el.dataset.idx);
+        const p = hits[idx];
+        inp.value = p.name + (p.dates ? ` (${p.dates})` : '');
+        hid.value = p.id;
+        dd.style.display = 'none';
+        checkBtn();
+    }
+}
+
+function checkBtn() {
+    const ok = document.getElementById('idA').value && document.getElementById('idB').value;
+    document.getElementById('btnBerechnen').disabled = !ok;
+}
+
+makeSearch('searchA', 'searchDropdownA', 'idA');
+makeSearch('searchB', 'searchDropdownB', 'idB');
+
+document.getElementById('btnBerechnen').addEventListener('click', () => {
+    const a = document.getElementById('idA').value;
+    const b = document.getElementById('idB').value;
+    if (!a || !b) return;
+
+    const btn = document.getElementById('btnBerechnen');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Berechne…';
+
+    fetch(`/api/verwandtschaft/?a=${a}&b=${b}`)
+        .then(r => r.json())
+        .then(showResult)
+        .catch(() => {
+            document.getElementById('ergebnis').innerHTML =
+                '<div class="alert alert-danger">Fehler bei der Berechnung.</div>';
+            document.getElementById('ergebnis').style.display = '';
+        })
+        .finally(() => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-search me-1"></i>Berechnen';
+        });
+});
+
+function glyph(g) { return g === 'M' ? '♂' : g === 'F' ? '♀' : '?'; }
+
+function personCard(p, cls='') {
+    return `<a href="${p.url}" class="pfad-person ${cls}">
+        ${glyph(p.geschlecht)} ${esc(p.name)}
+        ${p.lebensdaten ? `<span class="text-muted fw-normal" style="font-size:11px"> ${esc(p.lebensdaten)}</span>` : ''}
+    </a>`;
+}
+
+function showResult(d) {
+    const el = document.getElementById('ergebnis');
+    el.style.display = '';
+
+    if (!d.gefunden) {
+        el.innerHTML = `
+        <div class="card border-warning">
+            <div class="card-body">
+                <h5><i class="bi bi-question-circle text-warning me-2"></i>Keine Verwandtschaft gefunden</h5>
+                <p class="mb-0 text-muted">${esc(d.beschreibung)}</p>
+            </div>
+        </div>`;
+        return;
+    }
+
+    // Pfad aufbauen: A-Seite aufwärts zum LCA, dann B-Seite abwärts
+    const lcaId = d.gemeinsamer_vorfahre ? d.gemeinsamer_vorfahre.id : null;
+
+    function buildPfad(path, isFocalA) {
+        // path[0] = focal person, path[last] = LCA
+        return path.map((p, i) => {
+            const isLca  = p.id === lcaId;
+            const isFoc  = i === 0;
+            const cls    = isLca ? 'lca' : (isFoc ? 'focal' : '');
+            return personCard(p, cls);
+        }).join('<span class="pfad-arrow">↑</span>');
+    }
+
+    // Pfad von B: rückwärts (LCA zuerst, dann runter zu B)
+    function buildPfadB(path) {
+        const rev = [...path].reverse(); // LCA → B
+        return rev.map((p, i) => {
+            const isLca = p.id === lcaId;
+            const isFoc = i === rev.length - 1;
+            const cls   = isLca ? 'lca' : (isFoc ? 'focal' : '');
+            return personCard(p, cls);
+        }).join('<span class="pfad-arrow">↓</span>');
+    }
+
+    const pfadHtml = `
+        <div class="pfad-box mb-1">
+            <span class="text-muted small me-2">A ↑</span>
+            ${buildPfad(d.pfad_a)}
+        </div>
+        <div class="pfad-box">
+            <span class="text-muted small me-2" style="min-width:2.2rem">↓ B</span>
+            ${buildPfadB(d.pfad_b)}
+        </div>`;
+
+    // Direktlinie: LCA ist eine der Personen
+    const istDirekt = d.abstand_a === 0 || d.abstand_b === 0;
+
+    el.innerHTML = `
+    <div class="card mb-3 border-0 shadow-sm">
+        <div class="card-body">
+            <div class="d-flex align-items-start gap-3 flex-wrap">
+                <div class="flex-grow-1">
+                    <div class="text-muted small mb-1">Ergebnis</div>
+                    <div class="grad-badge mb-1">${esc(d.grad)}</div>
+                    <div class="text-muted">${esc(d.beschreibung)}</div>
+                </div>
+                <div class="text-center px-3 py-2 rounded-3" style="background:#f5e6c8;min-width:80px">
+                    <div class="fw-bold fs-4">${d.abstand_a + d.abstand_b}</div>
+                    <div class="small text-muted">Generationen</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    ${!istDirekt ? `
+    <div class="card mb-3">
+        <div class="card-header small fw-semibold">Gemeinsamer Vorfahre</div>
+        <div class="card-body py-2">
+            ${personCard(d.gemeinsamer_vorfahre, 'lca')}
+            <span class="text-muted small ms-2">
+                (${d.abstand_a} Generationen von ${esc(d.person_a.name)},
+                 ${d.abstand_b} Generationen von ${esc(d.person_b.name)})
+            </span>
+        </div>
+    </div>` : ''}
+
+    <div class="card">
+        <div class="card-header small fw-semibold">Verbindungsweg</div>
+        <div class="card-body">
+            ${pfadHtml}
+            <div class="mt-2 text-muted small">
+                <span class="badge border" style="background:#fff8e7;color:#333;border-color:#e6a817 !important">★ Gemeinsamer Vorfahre</span>
+                <span class="badge border ms-2" style="background:#fff;color:#333;font-weight:700">Ausgangsperson</span>
+            </div>
+        </div>
+    </div>`;
+}
+</script>
+{% endblock %}
