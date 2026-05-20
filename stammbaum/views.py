@@ -314,19 +314,36 @@ def personen_liste(request):
 def person_detail(request, pk):
     person = get_object_or_404(Person, pk=pk)
     vater, mutter = person.get_eltern()
-    kinder = person.get_kinder()
-    partner_qs, ehen = person.get_partner()
     geschwister = person.get_geschwister()
     quellen = person.quellen.all()
     fotos = person.fotos.all()
     aenderungen = person.aenderungen.all() if request.user.is_authenticated else None
+
+    # Build partner → gemeinsame Kinder from Elternschaft records
+    partner_kinder = {}  # partner_pk → {'partner': Person|None, 'kinder': [Person]}
+    for e in Elternschaft.objects.filter(
+        Q(vater=person) | Q(mutter=person)
+    ).select_related('kind', 'vater', 'mutter'):
+        other = e.mutter if e.vater_id == person.pk else e.vater
+        key = other.pk if other else 0
+        if key not in partner_kinder:
+            partner_kinder[key] = {'partner': other, 'kinder': []}
+        partner_kinder[key]['kinder'].append(e.kind)
+
+    # Sort each group's children by birth date
+    for group in partner_kinder.values():
+        group['kinder'].sort(key=lambda p: p.geburtsdatum or date.max)
+
+    partner_kinder_list = sorted(
+        partner_kinder.values(),
+        key=lambda g: (g['partner'] is None, g['partner'].vollname if g['partner'] else '')
+    )
+
     return render(request, 'stammbaum/person_detail.html', {
         'person': person,
         'vater': vater,
         'mutter': mutter,
-        'kinder': kinder,
-        'partner': partner_qs,
-        'ehen': ehen,
+        'partner_kinder': partner_kinder_list,
         'geschwister': geschwister,
         'quellen': quellen,
         'fotos': fotos,

@@ -91,21 +91,43 @@
                         {% if mutter %}<div><i class="bi bi-person text-danger me-1"></i><a href="{{ mutter.get_absolute_url }}">{{ mutter.vollname }}</a></div>{% endif %}
                         {% if not vater and not mutter %}<span class="text-muted small">Keine bekannt</span>{% endif %}
                     </div>
-                    <div class="col-md-3">
-                        <h6 class="text-muted mb-2">Partner / Ehe</h6>
-                        {% for p in partner %}
-                        <div><i class="bi bi-heart-fill text-danger me-1"></i><a href="{{ p.get_absolute_url }}">{{ p.vollname }}</a></div>
-                        {% empty %}<span class="text-muted small">Keine bekannt</span>
+                    {% if partner_kinder %}
+                    <div class="col-12">
+                        {% for group in partner_kinder %}
+                        <div class="mb-3">
+                            <h6 class="text-muted mb-2">
+                                <i class="bi bi-heart-fill text-danger me-1"></i>
+                                {% if group.partner %}
+                                    <a href="{{ group.partner.get_absolute_url }}">{{ group.partner.vollname }}</a>
+                                    <a href="{% url 'stammbaum' %}?person={{ group.partner.pk }}" class="btn btn-outline-secondary btn-sm ms-2 py-0" title="Im Stammbaum anzeigen">
+                                        <i class="bi bi-diagram-3"></i>
+                                    </a>
+                                {% else %}
+                                    Unbekannter Partner
+                                {% endif %}
+                            </h6>
+                            <div class="d-flex flex-wrap gap-2 ps-3">
+                                {% for k in group.kinder %}
+                                <a href="{{ k.get_absolute_url }}" class="text-decoration-none">
+                                    <span class="badge bg-light text-dark border">
+                                        <i class="bi bi-person-fill me-1 text-secondary"></i>{{ k.vollname }}
+                                        {% if k.lebensdaten %}<span class="text-muted fw-normal"> {{ k.lebensdaten }}</span>{% endif %}
+                                    </span>
+                                </a>
+                                {% empty %}
+                                <span class="text-muted small">Keine gemeinsamen Kinder</span>
+                                {% endfor %}
+                            </div>
+                        </div>
                         {% endfor %}
                     </div>
-                    <div class="col-md-3">
-                        <h6 class="text-muted mb-2">Kinder ({{ kinder.count }})</h6>
-                        {% for k in kinder %}
-                        <div><i class="bi bi-person-fill me-1 text-secondary"></i><a href="{{ k.get_absolute_url }}">{{ k.vollname }}</a></div>
-                        {% empty %}<span class="text-muted small">Keine bekannt</span>
-                        {% endfor %}
+                    {% else %}
+                    <div class="col-md-6">
+                        <h6 class="text-muted mb-2">Partner / Kinder</h6>
+                        <span class="text-muted small">Keine bekannt</span>
                     </div>
-                    <div class="col-md-3">
+                    {% endif %}
+                    <div class="col-md-6">
                         <h6 class="text-muted mb-2">Geschwister</h6>
                         {% for g in geschwister %}
                         <div><i class="bi bi-person me-1 text-secondary"></i><a href="{{ g.get_absolute_url }}">{{ g.vollname }}</a></div>

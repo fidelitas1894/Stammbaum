@@ -16,24 +16,26 @@
 .node circle {
     stroke-width: 2px;
     cursor: pointer;
+    transition: opacity 0.1s;
 }
+.node circle:hover { opacity: 0.7; }
 .node.M circle { fill: #cce5ff; stroke: #4a90c4; }
 .node.F circle { fill: #fce4ec; stroke: #c4607a; }
 .node.U circle { fill: #eee;    stroke: #888; }
-.node circle:hover { opacity: 0.75; }
 .node text {
     font-size: 11px;
     font-family: system-ui, sans-serif;
     pointer-events: none;
     fill: #333;
 }
-.node .name { font-weight: 600; }
+.node .name  { font-weight: 600; }
 .node .dates { fill: #888; font-size: 10px; }
 
 .link {
     fill: none;
     stroke: #bbb;
     stroke-width: 1.5px;
+    stroke-opacity: 0.6;
 }
 
 #tooltip {
@@ -60,13 +62,15 @@
     color: #555;
     border: 1px solid #ddd;
     pointer-events: none;
+    z-index: 5;
 }
 
-.gen-label {
-    font-size: 11px;
-    fill: #bbb;
-    font-family: system-ui, sans-serif;
-    pointer-events: none;
+#loading {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%,-50%);
+    font-size: 14px;
+    color: #888;
 }
 </style>
 {% endblock %}
@@ -75,12 +79,12 @@
 <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
     <div>
         <h1 class="mb-0"><i class="bi bi-diagram-3-fill me-2"></i>Gesamter Stammbaum</h1>
-        <div class="text-muted small mt-1">Alle Personen und Verwandtschaftsbeziehungen – nach Generationen geordnet</div>
+        <div class="text-muted small mt-1">Alle Personen, nach Generationen geordnet</div>
     </div>
     <div class="d-flex gap-2 flex-wrap align-items-center">
         <div class="form-check form-switch mb-0">
             <input class="form-check-input" type="checkbox" id="toggleNamen" checked>
-            <label class="form-check-label small" for="toggleNamen">Namen anzeigen</label>
+            <label class="form-check-label small" for="toggleNamen">Namen</label>
         </div>
         <button id="btnZentrieren" class="btn btn-outline-secondary btn-sm">
             <i class="bi bi-fullscreen me-1"></i>Zentrieren
@@ -93,7 +97,8 @@
 
 <div class="card p-0">
     <div id="graph-container">
-        <div id="stats-badge"></div>
+        <div id="stats-badge">Lädt…</div>
+        <div id="loading"><span class="spinner-border spinner-border-sm me-2"></span>Berechne Layout…</div>
         <div id="tooltip"></div>
         <svg id="svg-graph" width="100%" height="100%"></svg>
     </div>
@@ -101,9 +106,10 @@
 <div class="text-muted small mt-2 d-flex gap-3 flex-wrap">
     <span><i class="bi bi-info-circle me-1"></i>Mausrad = Zoom &middot; Ziehen = Schwenken &middot; Klick = Person öffnen</span>
     <span>
-        <span class="badge" style="background:#cce5ff;color:#333;border:1px solid #4a90c4">♂ Männlich</span>
-        <span class="badge ms-1" style="background:#fce4ec;color:#333;border:1px solid #c4607a">♀ Weiblich</span>
-        <span class="badge ms-1" style="background:#eee;color:#333;border:1px solid #888">? Unbekannt</span>
+        <span class="badge" style="background:#cce5ff;color:#333;border:1px solid #4a90c4">♂</span>
+        <span class="badge ms-1" style="background:#fce4ec;color:#333;border:1px solid #c4607a">♀</span>
+        <span class="badge ms-1" style="background:#eee;color:#333;border:1px solid #888">?</span>
+        &nbsp;Ältere Generation oben
     </span>
 </div>
 {% endblock %}
@@ -116,7 +122,7 @@ const W = container.clientWidth;
 const H = container.clientHeight;
 
 const svg = d3.select('#svg-graph');
-const zoom = d3.zoom().scaleExtent([0.04, 4]).on('zoom', e => g.attr('transform', e.transform));
+const zoom = d3.zoom().scaleExtent([0.03, 4]).on('zoom', e => g.attr('transform', e.transform));
 svg.call(zoom);
 const g = svg.append('g');
 
@@ -126,29 +132,26 @@ let showNamen = true;
 fetch('/api/stammbaum/gesamt/')
     .then(r => r.json())
     .then(({ nodes, links }) => {
-
-        document.getElementById('stats-badge').textContent =
-            `${nodes.length} Personen · ${links.length} Verbindungen`;
+        document.getElementById('loading').style.display = 'none';
 
         // ── 1. Build adjacency ──────────────────────────────────────────────
-        const nodeById = new Map(nodes.map(n => [n.id, n]));
-        const parentsOf = new Map(nodes.map(n => [n.id, []]));  // id → [parentId]
-        const childrenOf = new Map(nodes.map(n => [n.id, []])); // id → [childId]
+        const nodeById  = new Map(nodes.map(n => [n.id, n]));
+        const parentsOf = new Map(nodes.map(n => [n.id, []]));
+        const childrenOf= new Map(nodes.map(n => [n.id, []]));
 
         links.forEach(l => {
-            const src = l.source, tgt = l.target;
-            childrenOf.get(src)?.push(tgt);
-            parentsOf.get(tgt)?.push(src);
+            childrenOf.get(l.source)?.push(l.target);
+            parentsOf.get(l.target)?.push(l.source);
         });
 
         // ── 2. Assign generation via BFS from roots ─────────────────────────
         const generation = new Map();
         const roots = nodes.filter(n => parentsOf.get(n.id).length === 0);
-        const queue = roots.map(n => n.id);
+        const queue  = roots.map(n => n.id);
         roots.forEach(n => generation.set(n.id, 0));
 
         while (queue.length) {
-            const id = queue.shift();
+            const id  = queue.shift();
             const gen = generation.get(id);
             childrenOf.get(id).forEach(cid => {
                 if (!generation.has(cid) || generation.get(cid) < gen + 1) {
@@ -159,81 +162,44 @@ fetch('/api/stammbaum/gesamt/')
         }
         nodes.forEach(n => { if (!generation.has(n.id)) generation.set(n.id, 0); });
 
-        const maxGen = Math.max(...generation.values());
+        const maxGen   = Math.max(...generation.values());
+        const GEN_H    = Math.min(130, (H * 0.85) / (maxGen + 1));
 
-        // ── 3. Group by generation ──────────────────────────────────────────
+        // ── 3. Group by generation and set initial positions ────────────────
         const genGroups = Array.from({ length: maxGen + 1 }, () => []);
         nodes.forEach(n => genGroups[generation.get(n.id)].push(n));
 
-        // ── 4. Sort within each generation by parent midpoint (3 passes) ────
-        genGroups.forEach((grp, gi) => grp.forEach((n, i) => { n._xi = i; }));
-
-        for (let pass = 0; pass < 4; pass++) {
-            for (let gi = 1; gi <= maxGen; gi++) {
-                genGroups[gi].forEach(n => {
-                    const pxs = parentsOf.get(n.id)
-                        .map(pid => nodeById.get(pid))
-                        .filter(Boolean)
-                        .map(p => p._xi);
-                    n._sortKey = pxs.length
-                        ? pxs.reduce((a, b) => a + b) / pxs.length
-                        : n._xi;
-                });
-                genGroups[gi].sort((a, b) => a._sortKey - b._sortKey);
-                genGroups[gi].forEach((n, i) => { n._xi = i; });
-            }
-        }
-
-        // ── 5. Assign pixel coordinates ────────────────────────────────────
-        const NODE_W = 140;  // horizontal spacing
-        const NODE_H = 110;  // vertical spacing (per generation)
-
+        // Spread each generation evenly as starting positions
         genGroups.forEach((grp, gi) => {
-            const totalW = (grp.length - 1) * NODE_W;
+            const spacing = Math.max(120, W / (grp.length + 1));
             grp.forEach((n, i) => {
-                n.x = i * NODE_W - totalW / 2;
-                n.y = gi * NODE_H;
+                n.x  = (i - (grp.length - 1) / 2) * spacing;
+                n.y  = gi * GEN_H;
+                n.fy = n.y;   // PIN Y to generation row
             });
         });
 
-        // ── 6. Draw generation labels ───────────────────────────────────────
-        const labelG = g.append('g').attr('class', 'gen-labels');
-        genGroups.forEach((grp, gi) => {
-            if (!grp.length) return;
-            const sample = grp[0];
-            const birthYears = grp.map(n => n.geburtsjahr).filter(Boolean);
-            if (birthYears.length) {
-                const avg = Math.round(birthYears.reduce((a, b) => a + b) / birthYears.length);
-                const decade = Math.floor(avg / 10) * 10;
-                labelG.append('text')
-                    .attr('class', 'gen-label')
-                    .attr('x', Math.min(...grp.map(n => n.x)) - 20)
-                    .attr('y', sample.y + 4)
-                    .attr('text-anchor', 'end')
-                    .text(`~${decade}er`);
-            }
-        });
+        // ── 4. Force simulation (X only — Y is pinned) ─────────────────────
+        const sim = d3.forceSimulation(nodes)
+            .force('link', d3.forceLink(links)
+                .id(d => d.id)
+                .distance(GEN_H * 1.4)
+                .strength(0.25))
+            .force('charge', d3.forceManyBody().strength(-250))
+            .force('x-center', d3.forceX(0).strength(0.04))
+            .force('collision', d3.forceCollide(52))
+            .alphaDecay(0.025)
+            .velocityDecay(0.5);
 
-        // ── 7. Draw elbow-style links ───────────────────────────────────────
-        function elbowPath(src, tgt) {
-            const my = (src.y + 16 + tgt.y - 16) / 2;
-            return `M${src.x},${src.y + 16} V${my} H${tgt.x} V${tgt.y - 16}`;
-        }
+        // ── 5. Draw links ───────────────────────────────────────────────────
+        const linkSel = g.append('g').attr('class', 'links')
+            .selectAll('line').data(links).enter().append('line')
+            .attr('class', 'link');
 
-        g.append('g').attr('class', 'links')
-            .selectAll('path').data(links).enter().append('path')
-            .attr('class', 'link')
-            .attr('d', l => {
-                const s = nodeById.get(l.source), t = nodeById.get(l.target);
-                return s && t ? elbowPath(s, t) : null;
-            })
-            .filter(l => nodeById.get(l.source) && nodeById.get(l.target));
-
-        // ── 8. Draw nodes ───────────────────────────────────────────────────
+        // ── 6. Draw nodes ───────────────────────────────────────────────────
         const nodeSel = g.append('g').attr('class', 'nodes')
             .selectAll('.node').data(nodes).enter().append('g')
             .attr('class', d => `node ${d.geschlecht}`)
-            .attr('transform', d => `translate(${d.x},${d.y})`)
             .on('click', (e, d) => { window.location.href = d.url; })
             .on('mouseover', (e, d) => {
                 const tt = document.getElementById('tooltip');
@@ -246,32 +212,40 @@ fetch('/api/stammbaum/gesamt/')
                 const rect = container.getBoundingClientRect();
                 let x = e.clientX - rect.left + 14;
                 let y = e.clientY - rect.top - 10;
-                if (x + 220 > rect.width) x = e.clientX - rect.left - 230;
+                if (x + 220 > rect.width) x -= 244;
                 tt.style.left = x + 'px';
-                tt.style.top = y + 'px';
+                tt.style.top  = y + 'px';
             })
             .on('mouseout', () => { document.getElementById('tooltip').style.display = 'none'; });
 
-        nodeSel.append('circle').attr('r', 14);
+        nodeSel.append('circle').attr('r', 13);
 
-        // Gender symbol
         nodeSel.append('text')
             .attr('text-anchor', 'middle').attr('dy', '0.35em').attr('font-size', '11px')
             .style('pointer-events', 'none')
             .text(d => d.geschlecht === 'M' ? '♂' : d.geschlecht === 'F' ? '♀' : '?')
             .style('fill', d => d.geschlecht === 'M' ? '#1a5a8e' : d.geschlecht === 'F' ? '#8e2a42' : '#555');
 
-        // Labels
         labelGroup = nodeSel.append('g').attr('class', 'label');
-        labelGroup.append('text').attr('class', 'name')
-            .attr('x', 18).attr('dy', '-0.1em')
+        labelGroup.append('text').attr('class', 'name').attr('x', 17).attr('dy', '-0.1em')
             .text(d => d.name.length > 18 ? d.name.substr(0, 16) + '…' : d.name);
-        labelGroup.append('text').attr('class', 'dates')
-            .attr('x', 18).attr('dy', '1.1em')
+        labelGroup.append('text').attr('class', 'dates').attr('x', 17).attr('dy', '1.1em')
             .text(d => d.lebensdaten);
 
-        // ── 9. Initial fit ──────────────────────────────────────────────────
-        fitView();
+        // ── 7. Tick ─────────────────────────────────────────────────────────
+        sim.on('tick', () => {
+            linkSel
+                .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+                .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+            nodeSel.attr('transform', d => `translate(${d.x},${d.y})`);
+        });
+
+        // Auto-fit once simulation settles
+        sim.on('end', fitView);
+        setTimeout(fitView, 2500);
+
+        document.getElementById('stats-badge').textContent =
+            `${nodes.length} Personen · ${links.length} Verbindungen · ${maxGen + 1} Generationen`;
     });
 
 function fitView() {
@@ -281,8 +255,8 @@ function fitView() {
         const scale = Math.min(1, (W - 60) / bounds.width, (H - 60) / bounds.height);
         const tx = (W - bounds.width * scale) / 2 - bounds.x * scale;
         const ty = (H - bounds.height * scale) / 2 - bounds.y * scale;
-        svg.transition().duration(500)
-            .call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+        svg.transition().duration(600)
+           .call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
     } catch(e) {}
 }
 
