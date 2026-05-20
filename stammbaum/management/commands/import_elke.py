@@ -11,9 +11,17 @@ from stammbaum.models import Elternschaft, Person
 class Command(BaseCommand):
     help = 'Importiert ELKE-Datenbankdateien (.ELK, .GM3) in die Django-Datenbank'
 
-    DATUM_RE = re.compile(r'^(\d{2})(\d{2})(\d{4})$')
-    # Zeile 1: Typ (7/5) + Nr + Name + VaterNr + MutterNr
-    HEADER_RE = re.compile(r'^([75])\s+(\d+)(.*?)\s+(\d+)\s+(\d+)\s*$')
+    # Binäres Record-Muster: Typ(7/5) + NR + NAME + VATER + MUTTER + Trenner + Geschlecht + Datum
+    RECORD_RE = re.compile(
+        rb'[75]\s{2,10}(\d+)(.{10,80}?)\s{3,10}(\d+)\s{3,10}(\d+)'
+        rb'[\x00-\xff]{0,8}'
+        rb'([MFmf])'
+        rb'(\d{8})'
+        rb'([\d_ ]{8})',
+        re.DOTALL,
+    )
+
+    KONFESSION_RE = re.compile(r'\b(ev(?:ang(?:elisch)?)?|rk|r\.k\.|kath(?:olisch)?|ref(?:ormiert)?|luth(?:erisch)?|dissid(?:ent)?)\b', re.IGNORECASE)
 
     def handle(self, *args, **options):
         import_path = settings.IMPORT_PATH
@@ -21,78 +29,83 @@ class Command(BaseCommand):
             self.stderr.write(f'Import-Verzeichnis nicht gefunden: {import_path}')
             return
 
-        dateien = [
+        dateien = sorted([
             os.path.join(import_path, f)
             for f in os.listdir(import_path)
             if f.lower().endswith(('.elk', '.gm3'))
-        ]
+        ])
 
         if not dateien:
             self.stdout.write('Keine .ELK- oder .GM3-Dateien gefunden.')
             return
 
         self.stdout.write(f'Gefundene Dateien: {len(dateien)}')
-        for datei in sorted(dateien):
-            self.stdout.write(f'  → {os.path.basename(datei)}')
 
-        # Erst alle Personen importieren, dann Beziehungen setzen
         personen_daten = {}  # elke_nr → (person, vater_nr, mutter_nr)
 
-        for datei in sorted(dateien):
+        for datei in dateien:
             self.stdout.write(f'\nVerarbeite {os.path.basename(datei)} …')
             try:
-                zeilen = open(datei, encoding='latin-1').readlines()
+                raw = open(datei, 'rb').read()
             except Exception as e:
                 self.stderr.write(f'  Fehler beim Lesen: {e}')
                 continue
 
-            i = 0
+            matches = list(self.RECORD_RE.finditer(raw))
+            self.stdout.write(f'  Gefundene Records: {len(matches)}')
+
             importiert = 0
-            uebersprungen = 0
-            while i < len(zeilen) - 1:
-                zeile1 = zeilen[i].rstrip('\n\r')
-                zeile2 = zeilen[i + 1].rstrip('\n\r') if i + 1 < len(zeilen) else ''
+            fehler = 0
 
-                m = self.HEADER_RE.match(zeile1)
-                if m:
-                    try:
-                        elke_nr = int(m.group(2))
-                        name_raw = m.group(3).strip()
-                        vater_nr = int(m.group(4))
-                        mutter_nr = int(m.group(5))
+            for i, m in enumerate(matches):
+                try:
+                    elke_nr = int(m.group(1))
+                    name_raw = m.group(2).decode('latin-1').strip()
+                    vater_nr = int(m.group(3))
+                    mutter_nr = int(m.group(4))
+                    geschlecht_raw = m.group(5).decode('latin-1').upper()
+                    geb_raw = m.group(6).decode('latin-1')
+                    tod_raw = m.group(7).decode('latin-1')
 
-                        nachname, vornamen, titel = self._parse_name(name_raw)
-                        geschlecht, geburtsdatum, sterbedatum, geburtsort, sterbeort, konfession = \
-                            self._parse_datenzeile(zeile2)
+                    # Rest-Text bis zum nächsten Record oder Ende
+                    rest_start = m.end()
+                    rest_end = matches[i + 1].start() if i + 1 < len(matches) else len(raw)
+                    rest_bytes = raw[rest_start:rest_end]
+                    rest_text = self._extract_text(rest_bytes)
 
-                        person, created = Person.objects.update_or_create(
-                            elke_nr=elke_nr,
-                            defaults={
-                                'nachname': nachname,
-                                'vornamen': vornamen,
-                                'rufname': vornamen.split(',')[0].strip() if vornamen else '',
-                                'titel': titel,
-                                'geschlecht': geschlecht,
-                                'geburtsdatum': geburtsdatum,
-                                'geburtsort': geburtsort,
-                                'sterbedatum': sterbedatum,
-                                'sterbeort': sterbeort,
-                                'konfession': konfession,
-                            },
-                        )
-                        personen_daten[elke_nr] = (person, vater_nr, mutter_nr)
-                        importiert += 1
-                        if created:
-                            self.stdout.write(f'  + {nachname}, {vornamen} (Nr. {elke_nr})')
-                        i += 2
-                        continue
-                    except Exception as e:
-                        uebersprungen += 1
-                i += 1
+                    nachname, vornamen, titel = self._parse_name(name_raw)
+                    geschlecht = geschlecht_raw if geschlecht_raw in ('M', 'F') else 'U'
+                    geburtsdatum = self._parse_datum(geb_raw)
+                    sterbedatum = self._parse_datum(tod_raw)
+                    geburtsort, sterbeort, konfession = self._parse_rest(rest_text)
 
-            self.stdout.write(f'  Importiert: {importiert}, Übersprungen: {uebersprungen}')
+                    person, created = Person.objects.update_or_create(
+                        elke_nr=elke_nr,
+                        defaults={
+                            'nachname': nachname,
+                            'vornamen': vornamen,
+                            'rufname': vornamen.split(',')[0].strip() if vornamen else '',
+                            'titel': titel,
+                            'geschlecht': geschlecht,
+                            'geburtsdatum': geburtsdatum,
+                            'geburtsort': geburtsort,
+                            'sterbedatum': sterbedatum,
+                            'sterbeort': sterbeort,
+                            'konfession': konfession,
+                        },
+                    )
+                    personen_daten[elke_nr] = (person, vater_nr, mutter_nr)
+                    importiert += 1
+                    status = 'NEU' if created else 'AKT'
+                    self.stdout.write(f'  [{status}] {nachname}, {vornamen} (Nr. {elke_nr})')
 
-        # Beziehungen setzen
+                except Exception as e:
+                    fehler += 1
+                    self.stderr.write(f'  Fehler bei Record: {e}')
+
+            self.stdout.write(f'  Importiert: {importiert}, Fehler: {fehler}')
+
+        # Eltern-Kind-Beziehungen
         self.stdout.write('\nSetze Eltern-Kind-Beziehungen …')
         beziehungen = 0
         for elke_nr, (person, vater_nr, mutter_nr) in personen_daten.items():
@@ -104,76 +117,97 @@ class Command(BaseCommand):
                     defaults={'vater': vater, 'mutter': mutter},
                 )
                 beziehungen += 1
+
         self.stdout.write(f'Beziehungen gesetzt: {beziehungen}')
         self.stdout.write(self.style.SUCCESS(
             f'\nImport abgeschlossen. {Person.objects.count()} Personen in der Datenbank.'
         ))
 
+    def _extract_text(self, raw_bytes):
+        """Extrahiert lesbaren Text aus einem Binärblock (latin-1, bis zu viele Nullbytes)."""
+        text = ''
+        null_count = 0
+        for b in raw_bytes:
+            if b == 0x00:
+                null_count += 1
+                if null_count >= 3:
+                    break
+                text += ' '
+            else:
+                null_count = 0
+                if b >= 0x20 or b == 0x09:
+                    text += chr(b)
+                elif b >= 0x80:
+                    try:
+                        text += bytes([b]).decode('latin-1')
+                    except Exception:
+                        pass
+        return text.strip()
+
     def _parse_name(self, name_raw):
-        """Zerlegt 'Jünger ALFRED, Karl Dr.-Ing.' in (Nachname, Vornamen, Titel)."""
-        titel_pattern = re.compile(
-            r'\b(Dr\.(?:-Ing\.|-Med\.|-Phil\.|-Jur\.)?|Dipl\.-(?:Ing|Kfm|Päd)\.|Prof\.|Pastor|Pfarrer|Ing\.)\b',
+        """Zerlegt z.B. 'Jünger ALFRED, Karl Dr.-Ing.' → (Nachname, Vornamen, Titel)"""
+        titel_re = re.compile(
+            r'\s+(Dr\.(?:-Ing\.|-Med\.|-Phil\.|-Jur\.|-rer\.nat\.)?'
+            r'|Dipl\.-(?:Ing|Kfm|Päd|Biol|Chem|Phys)\.'
+            r'|Prof\.|Pastor|Pfarrer|Ing\.|Dipl\.-Ing\.\(FH\))\s*$',
             re.IGNORECASE,
         )
-        titel_match = titel_pattern.search(name_raw)
-        titel = titel_match.group(0) if titel_match else ''
-        if titel:
-            name_raw = name_raw.replace(titel, '').strip()
+        titel = ''
+        m = titel_re.search(name_raw)
+        if m:
+            titel = m.group(1).strip()
+            name_raw = name_raw[:m.start()].strip()
 
         teile = name_raw.split(None, 1)
-        nachname = teile[0].strip() if teile else ''
+        nachname = teile[0].strip() if teile else name_raw
         vornamen_raw = teile[1].strip() if len(teile) > 1 else ''
 
-        # Vornamen: großgeschriebene Wörter normalisieren
         vornamen_liste = [v.strip().capitalize() for v in re.split(r'[,\s]+', vornamen_raw) if v.strip()]
         vornamen = ', '.join(vornamen_liste)
-        return nachname, vornamen, titel.strip()
 
-    def _parse_datenzeile(self, zeile):
-        """Parst 'M3101189831081971Magdeburg-Neustadt Augsburg Jünger 169/1898 ev'"""
-        if not zeile or len(zeile) < 1:
-            return 'U', None, None, '', '', ''
-
-        geschlecht_raw = zeile[0].upper()
-        geschlecht = geschlecht_raw if geschlecht_raw in ('M', 'F') else 'U'
-        rest = zeile[1:]
-
-        geburtsdatum = self._parse_datum(rest[:8])
-        sterbedatum = self._parse_datum(rest[8:16]) if len(rest) >= 16 else None
-        rest_felder = rest[16:].strip() if len(rest) > 16 else ''
-
-        teile = rest_felder.split()
-        geburtsort = ''
-        sterbeort = ''
-        konfession = ''
-
-        # Felder heuristisch zuweisen
-        ort_kandidaten = [t for t in teile if not re.match(r'^\d+/\d+$', t)]
-        if len(ort_kandidaten) >= 1:
-            geburtsort = ort_kandidaten[0].replace('_', '').strip()
-        if len(ort_kandidaten) >= 2:
-            sterbeort = ort_kandidaten[1].replace('_', '').strip()
-        # Konfession ist häufig kurz (ev, rk, kath, ...)
-        kuerzel = [t for t in teile if re.match(r'^(ev|rk|kath|ref|luth|dissid)\b', t, re.I)]
-        if kuerzel:
-            konfession = kuerzel[0].lower()
-
-        return geschlecht, geburtsdatum, sterbedatum, geburtsort, sterbeort, konfession
+        return nachname, vornamen, titel
 
     def _parse_datum(self, s):
-        """Parst DDMMYYYY, gibt date oder None zurück."""
-        if not s or len(s) < 8:
+        """Parst DDMMYYYY → date oder None."""
+        s = s.strip().replace(' ', '').replace('_', '')
+        if not s or re.fullmatch(r'[b0_]+', s, re.I):
             return None
-        s = s[:8]
-        if re.match(r'^[b_0]+$', s, re.I):
-            return None
-        m = self.DATUM_RE.match(s)
+        m = re.fullmatch(r'(\d{2})(\d{2})(\d{4})', s)
         if not m:
             return None
         try:
             tag, monat, jahr = int(m.group(1)), int(m.group(2)), int(m.group(3))
-            if jahr < 1400 or jahr > 2100 or monat < 1 or monat > 12 or tag < 1 or tag > 31:
+            if not (1400 <= jahr <= 2100 and 1 <= monat <= 12 and 1 <= tag <= 31):
                 return None
             return date(jahr, monat, tag)
         except ValueError:
             return None
+
+    def _parse_rest(self, text):
+        """Parst den Resttext nach den Datumsfeldern: Geburtsort, Sterbeort, Konfession."""
+        # Konfession extrahieren
+        konfession = ''
+        km = self.KONFESSION_RE.search(text)
+        if km:
+            konfession = km.group(1).lower()
+
+        # Felder vor der Konfession (oder vor der Reg-Nr) sind Ortsangaben
+        vor_konfession = text[:km.start()] if km else text
+        # Entferne Reg-Nr-ähnliche Tokens (z.B. "169/1898")
+        vor_konfession = re.sub(r'\d+/\d+', '', vor_konfession)
+        # Entferne Unterstriche-Platzhalter
+        vor_konfession = re.sub(r'_{3,}', ' ', vor_konfession)
+
+        teile = re.split(r'\s{2,}', vor_konfession.strip())
+        teile = [t.strip() for t in teile if t.strip() and len(t.strip()) > 1]
+
+        geburtsort = teile[0] if len(teile) > 0 else ''
+        sterbeort = teile[1] if len(teile) > 1 else ''
+
+        # Bereinigung: Orte dürfen keine Zahlen-only oder Kürzel enthalten
+        if re.fullmatch(r'[\d/\s]+', geburtsort):
+            geburtsort = ''
+        if re.fullmatch(r'[\d/\s]+', sterbeort):
+            sterbeort = ''
+
+        return geburtsort[:200], sterbeort[:200], konfession
