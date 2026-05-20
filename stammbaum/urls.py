@@ -15,5 +15,6 @@ urlpatterns = [
     path('statistiken/', views.statistiken, name='statistiken'),
     path('suche/', views.suche, name='suche'),
     path('export/gedcom/', views.export_gedcom, name='export_gedcom'),
+    path('export/csv/', views.export_csv, name='export_csv'),
     path('import/', views.import_view, name='import'),
 ]

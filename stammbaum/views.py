@@ -1,3 +1,4 @@
+import csv
 import io
 import json
 import os
@@ -454,6 +455,44 @@ def export_gedcom(request):
     content = '\n'.join(lines)
     response = HttpResponse(content, content_type='text/plain; charset=utf-8')
     response['Content-Disposition'] = 'attachment; filename="stammbaum.ged"'
+    return response
+
+
+# ---------------------------------------------------------------------------
+# CSV-Export
+# ---------------------------------------------------------------------------
+
+def export_csv(request):
+    response = HttpResponse(content_type='text/csv; charset=utf-8')
+    response['Content-Disposition'] = 'attachment; filename="stammbaum.csv"'
+    response.write('﻿')  # UTF-8 BOM für Excel
+
+    writer = csv.writer(response, delimiter=';')
+    writer.writerow([
+        'ID', 'ELKE-Nr', 'Nachname', 'Vornamen', 'Rufname', 'Titel',
+        'Geschlecht', 'Geburtsdatum', 'Geburtsort', 'Sterbedatum', 'Sterbeort',
+        'Konfession', 'Beruf', 'Vater', 'Mutter',
+    ])
+
+    for p in Person.objects.all().order_by('nachname', 'vornamen'):
+        vater, mutter = p.get_eltern()
+        writer.writerow([
+            p.pk,
+            p.elke_nr or '',
+            p.nachname,
+            p.vornamen,
+            p.rufname,
+            p.titel,
+            p.get_geschlecht_display(),
+            p.geburtsdatum.strftime('%d.%m.%Y') if p.geburtsdatum else '',
+            p.geburtsort,
+            p.sterbedatum.strftime('%d.%m.%Y') if p.sterbedatum else '',
+            p.sterbeort,
+            p.konfession,
+            p.beruf,
+            str(vater) if vater else '',
+            str(mutter) if mutter else '',
+        ])
     return response
 
 

@@ -76,7 +76,9 @@
 
 <footer class="mt-5 py-3 text-center text-muted small">
     <div class="container">
-        <a href="{% url 'export_gedcom' %}"><i class="bi bi-download me-1"></i>GEDCOM exportieren</a>
+        <a href="{% url 'export_csv' %}"><i class="bi bi-filetype-csv me-1"></i>CSV</a>
+        &nbsp;·&nbsp;
+        <a href="{% url 'export_gedcom' %}"><i class="bi bi-download me-1"></i>GEDCOM</a>
         &nbsp;·&nbsp;
         <a href="/admin/">Admin</a>
     </div>
