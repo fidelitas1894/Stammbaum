@@ -35,7 +35,15 @@
         </button>
         <div class="collapse navbar-collapse" id="navMenu">
             <ul class="navbar-nav me-auto">
-                <li class="nav-item"><a class="nav-link" href="{% url 'stammbaum' %}"><i class="bi bi-diagram-3 me-1"></i>Stammbaum</a></li>
+                <li class="nav-item dropdown">
+                    <a class="nav-link dropdown-toggle" href="#" data-bs-toggle="dropdown">
+                        <i class="bi bi-diagram-3 me-1"></i>Stammbaum
+                    </a>
+                    <ul class="dropdown-menu">
+                        <li><a class="dropdown-item" href="{% url 'stammbaum' %}"><i class="bi bi-person-fill me-2"></i>Person-Ansicht</a></li>
+                        <li><a class="dropdown-item" href="{% url 'stammbaum_gesamt' %}"><i class="bi bi-diagram-3-fill me-2"></i>Gesamter Stammbaum</a></li>
+                    </ul>
+                </li>
                 <li class="nav-item"><a class="nav-link" href="{% url 'personen_liste' %}"><i class="bi bi-people me-1"></i>Personen</a></li>
                 <li class="nav-item"><a class="nav-link" href="{% url 'karte' %}"><i class="bi bi-map me-1"></i>Karte</a></li>
                 <li class="nav-item"><a class="nav-link" href="{% url 'statistiken' %}"><i class="bi bi-bar-chart me-1"></i>Statistiken</a></li>

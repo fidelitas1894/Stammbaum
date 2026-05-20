@@ -72,6 +72,39 @@ def index(request):
 # Stammbaum
 # ---------------------------------------------------------------------------
 
+def stammbaum_gesamt(request):
+    return render(request, 'stammbaum/stammbaum_gesamt.html')
+
+
+def stammbaum_gesamt_json(request):
+    personen = list(Person.objects.all().values(
+        'pk', 'nachname', 'vornamen', 'geschlecht', 'geburtsdatum', 'sterbedatum'
+    ))
+    nodes = []
+    for p in personen:
+        geb = p['geburtsdatum'].year if p['geburtsdatum'] else None
+        tod = p['sterbedatum'].year if p['sterbedatum'] else None
+        vorname = (p['vornamen'] or '').split(',')[0].strip()
+        nodes.append({
+            'id': p['pk'],
+            'name': f"{vorname} {p['nachname']}".strip(),
+            'nachname': p['nachname'],
+            'geschlecht': p['geschlecht'],
+            'geburtsjahr': geb,
+            'sterbejahr': tod,
+            'lebensdaten': (f"* {geb}" if geb else '') + (f" † {tod}" if tod else ''),
+            'url': f"/personen/{p['pk']}/",
+        })
+
+    links = []
+    for e in Elternschaft.objects.select_related('kind', 'vater', 'mutter').all():
+        if e.vater_id:
+            links.append({'source': e.vater_id, 'target': e.kind_id, 'typ': 'elternteil'})
+        if e.mutter_id:
+            links.append({'source': e.mutter_id, 'target': e.kind_id, 'typ': 'elternteil'})
+
+    return JsonResponse({'nodes': nodes, 'links': links})
+
 def stammbaum(request):
     personen = Person.objects.all().order_by('nachname', 'vornamen')
     start_id = request.GET.get('person')

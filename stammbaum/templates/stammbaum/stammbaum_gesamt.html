@@ -1,0 +1,272 @@
+{% extends "stammbaum/base.html" %}
+{% block title %}Gesamter Stammbaum{% endblock %}
+{% block extra_css %}
+<style>
+#graph-container {
+    width: 100%;
+    height: 80vh;
+    background: #fff;
+    border-radius: 8px;
+    overflow: hidden;
+    position: relative;
+    cursor: grab;
+}
+#graph-container:active { cursor: grabbing; }
+
+.node circle {
+    stroke-width: 2px;
+    cursor: pointer;
+    transition: r 0.15s;
+}
+.node circle:hover { r: 12px; }
+.node.M circle { fill: #cce5ff; stroke: #4a90c4; }
+.node.F circle { fill: #fce4ec; stroke: #c4607a; }
+.node.U circle { fill: #eeeeee; stroke: #888; }
+.node text {
+    font-size: 11px;
+    font-family: system-ui, sans-serif;
+    pointer-events: none;
+    fill: #333;
+}
+.node .name { font-weight: 600; }
+.node .dates { fill: #888; font-size: 10px; }
+
+.link {
+    fill: none;
+    stroke: #bbb;
+    stroke-width: 1.5px;
+    stroke-opacity: 0.7;
+}
+
+#tooltip {
+    position: absolute;
+    background: #fff;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 13px;
+    pointer-events: none;
+    display: none;
+    z-index: 10;
+    box-shadow: 0 2px 8px rgba(0,0,0,.15);
+    max-width: 220px;
+}
+
+#stats-badge {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    background: rgba(255,255,255,.9);
+    border-radius: 6px;
+    padding: 6px 12px;
+    font-size: 12px;
+    color: #555;
+    border: 1px solid #ddd;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+    <div>
+        <h1 class="mb-0"><i class="bi bi-diagram-3-fill me-2"></i>Gesamter Stammbaum</h1>
+        <div class="text-muted small mt-1">Alle Personen und Verwandtschaftsbeziehungen auf einen Blick</div>
+    </div>
+    <div class="d-flex gap-2 flex-wrap align-items-center">
+        <div class="form-check form-switch mb-0">
+            <input class="form-check-input" type="checkbox" id="toggleNamen" checked>
+            <label class="form-check-label small" for="toggleNamen">Namen anzeigen</label>
+        </div>
+        <button id="btnZentrieren" class="btn btn-outline-secondary btn-sm">
+            <i class="bi bi-fullscreen me-1"></i>Zentrieren
+        </button>
+        <a href="{% url 'stammbaum' %}" class="btn btn-outline-primary btn-sm">
+            <i class="bi bi-person-fill me-1"></i>Person-Ansicht
+        </a>
+    </div>
+</div>
+
+<div class="card p-0">
+    <div id="graph-container">
+        <div id="stats-badge"></div>
+        <div id="tooltip"></div>
+        <svg id="svg-graph" width="100%" height="100%"></svg>
+    </div>
+</div>
+<div class="text-muted small mt-2 d-flex gap-3 flex-wrap">
+    <span><i class="bi bi-info-circle me-1"></i>Mausrad = Zoom &middot; Ziehen = Schwenken &middot; Knoten ziehen = Position fixieren</span>
+    <span>
+        <span class="badge" style="background:#cce5ff;color:#333;border:1px solid #4a90c4">♂ Männlich</span>
+        <span class="badge ms-1" style="background:#fce4ec;color:#333;border:1px solid #c4607a">♀ Weiblich</span>
+        <span class="badge ms-1" style="background:#eee;color:#333;border:1px solid #888">? Unbekannt</span>
+    </span>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<script>
+const W = document.getElementById('graph-container').clientWidth;
+const H = document.getElementById('graph-container').clientHeight;
+
+const svg = d3.select('#svg-graph');
+const zoom = d3.zoom().scaleExtent([0.05, 4]).on('zoom', e => g.attr('transform', e.transform));
+svg.call(zoom);
+const g = svg.append('g');
+
+let showNamen = true;
+let simulation, nodeSelection, labelSelection;
+
+fetch('/api/stammbaum/gesamt/')
+    .then(r => r.json())
+    .then(data => {
+        const { nodes, links } = data;
+
+        document.getElementById('stats-badge').textContent =
+            `${nodes.length} Personen · ${links.length} Verbindungen`;
+
+        // Link-Objekte mit source/target als Referenz
+        const nodeById = new Map(nodes.map(n => [n.id, n]));
+
+        simulation = d3.forceSimulation(nodes)
+            .force('link', d3.forceLink(links)
+                .id(d => d.id)
+                .distance(70)
+                .strength(0.8))
+            .force('charge', d3.forceManyBody().strength(-180))
+            .force('center', d3.forceCenter(W / 2, H / 2))
+            .force('collision', d3.forceCollide(22))
+            // Generationskraft: Eltern weiter oben als Kinder
+            .force('y-generation', d3.forceY().y(d => {
+                // Berechne Generation anhand der Kanten
+                return H / 2;
+            }).strength(0.01));
+
+        // Generationsebenen berechnen für vertikale Anordnung
+        const generation = new Map();
+        const roots = new Set(nodes.map(n => n.id));
+        links.forEach(l => roots.delete(typeof l.target === 'object' ? l.target.id : l.target));
+        roots.forEach(id => generation.set(id, 0));
+
+        function setGen(id, gen) {
+            if (!generation.has(id) || generation.get(id) < gen) {
+                generation.set(id, gen);
+                links.forEach(l => {
+                    const src = typeof l.source === 'object' ? l.source.id : l.source;
+                    const tgt = typeof l.target === 'object' ? l.target.id : l.target;
+                    if (src === id) setGen(tgt, gen + 1);
+                });
+            }
+        }
+        roots.forEach(id => setGen(id, 0));
+        const maxGen = Math.max(...generation.values()) || 1;
+
+        // Startpositionen nach Generation
+        nodes.forEach(n => {
+            const gen = generation.get(n.id) || 0;
+            n.y = (gen / maxGen) * (H * 0.8) + H * 0.1;
+        });
+
+        simulation.force('y-generation', d3.forceY()
+            .y(d => {
+                const gen = generation.get(d.id) || 0;
+                return (gen / maxGen) * (H * 0.8) + H * 0.1;
+            })
+            .strength(0.35));
+
+        // Links zeichnen
+        const linkSel = g.append('g').attr('class', 'links')
+            .selectAll('line')
+            .data(links)
+            .enter().append('line')
+            .attr('class', 'link');
+
+        // Nodes
+        const nodeSel = g.append('g').attr('class', 'nodes')
+            .selectAll('.node')
+            .data(nodes)
+            .enter().append('g')
+            .attr('class', d => `node ${d.geschlecht}`)
+            .call(d3.drag()
+                .on('start', (e, d) => {
+                    if (!e.active) simulation.alphaTarget(0.3).restart();
+                    d.fx = d.x; d.fy = d.y;
+                })
+                .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
+                .on('end', (e, d) => {
+                    if (!e.active) simulation.alphaTarget(0);
+                    // Position fixiert lassen nach Drag
+                }))
+            .on('click', (e, d) => {
+                if (e.defaultPrevented) return;
+                window.location.href = d.url;
+            })
+            .on('mouseover', (e, d) => {
+                const tt = document.getElementById('tooltip');
+                tt.innerHTML = `<strong>${d.name}</strong>`
+                    + (d.lebensdaten ? `<br><span class="text-muted">${d.lebensdaten}</span>` : '');
+                tt.style.display = 'block';
+            })
+            .on('mousemove', e => {
+                const tt = document.getElementById('tooltip');
+                const rect = document.getElementById('graph-container').getBoundingClientRect();
+                let x = e.clientX - rect.left + 14;
+                let y = e.clientY - rect.top - 10;
+                if (x + 220 > rect.width) x = e.clientX - rect.left - 230;
+                tt.style.left = x + 'px';
+                tt.style.top = y + 'px';
+            })
+            .on('mouseout', () => { document.getElementById('tooltip').style.display = 'none'; });
+
+        nodeSel.append('circle').attr('r', 9);
+
+        const labelSel = nodeSel.append('g').attr('class', 'label');
+        labelSel.append('text')
+            .attr('class', 'name')
+            .attr('x', 13)
+            .attr('dy', '-0.1em')
+            .text(d => d.name.length > 20 ? d.name.substr(0, 18) + '…' : d.name);
+        labelSel.append('text')
+            .attr('class', 'dates')
+            .attr('x', 13)
+            .attr('dy', '1em')
+            .text(d => d.lebensdaten);
+
+        // Geschlechts-Symbol im Kreis
+        nodeSel.append('text')
+            .attr('text-anchor', 'middle')
+            .attr('dy', '0.35em')
+            .attr('font-size', '10px')
+            .style('pointer-events', 'none')
+            .text(d => d.geschlecht === 'M' ? '♂' : d.geschlecht === 'F' ? '♀' : '?')
+            .style('fill', d => d.geschlecht === 'M' ? '#1a5a8e' : d.geschlecht === 'F' ? '#8e2a42' : '#555');
+
+        simulation.on('tick', () => {
+            linkSel
+                .attr('x1', d => d.source.x)
+                .attr('y1', d => d.source.y)
+                .attr('x2', d => d.target.x)
+                .attr('y2', d => d.target.y);
+            nodeSel.attr('transform', d => `translate(${d.x},${d.y})`);
+        });
+
+        nodeSelection = nodeSel;
+        labelSelection = labelSel;
+    });
+
+document.getElementById('toggleNamen').addEventListener('change', function() {
+    showNamen = this.checked;
+    if (labelSelection) labelSelection.style('display', showNamen ? null : 'none');
+});
+
+document.getElementById('btnZentrieren').addEventListener('click', () => {
+    svg.transition().duration(600).call(
+        zoom.transform,
+        d3.zoomIdentity.translate(W / 2, H / 2).scale(0.8).translate(-W / 2, -H / 2)
+    );
+    if (simulation) {
+        simulation.alpha(0.3).restart();
+    }
+});
+</script>
+{% endblock %}

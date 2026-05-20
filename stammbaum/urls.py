@@ -4,6 +4,8 @@ from . import views
 urlpatterns = [
     path('', views.index, name='index'),
     path('stammbaum/', views.stammbaum, name='stammbaum'),
+    path('stammbaum/gesamt/', views.stammbaum_gesamt, name='stammbaum_gesamt'),
+    path('api/stammbaum/gesamt/', views.stammbaum_gesamt_json, name='stammbaum_gesamt_json'),
     path('api/stammbaum/<int:person_id>/', views.stammbaum_json, name='stammbaum_json'),
     path('personen/', views.personen_liste, name='personen_liste'),
     path('personen/neu/', views.person_neu, name='person_neu'),
