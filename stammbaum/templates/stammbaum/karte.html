@@ -4,17 +4,19 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
 #map { height: 70vh; border-radius: 8px; }
-.legend { background: white; padding: 10px; border-radius: 6px; box-shadow: 0 1px 4px rgba(0,0,0,.2); }
+#geocode-progress { display: none; }
 </style>
 {% endblock %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
+<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
     <h1><i class="bi bi-map me-2"></i>Herkunftskarte</h1>
-    {% if user.is_authenticated %}
-    <button id="btnGeocode" class="btn btn-outline-primary btn-sm">
-        <i class="bi bi-geo-alt me-1"></i>Orte geocodieren
-    </button>
-    {% endif %}
+    <div class="d-flex align-items-center gap-2">
+        <span id="geocode-progress" class="text-muted small">
+            <span class="spinner-border spinner-border-sm me-1"></span>
+            <span id="geocode-status">Koordinaten werden geladen…</span>
+        </span>
+        <span id="marker-count" class="badge bg-secondary"></span>
+    </div>
 </div>
 
 <div class="card p-0 mb-3">
@@ -41,46 +43,67 @@ function makeIcon(color) {
     });
 }
 
+let markerCount = 0;
+const markerCountEl = document.getElementById('marker-count');
+const progressEl = document.getElementById('geocode-progress');
+const statusEl = document.getElementById('geocode-status');
+
+function addMarkers(data) {
+    const bounds = [];
+    data.forEach(item => {
+        if (item.lat && item.lon) {
+            const color = item.typ === 'geburt' ? '#2ecc71' : '#e74c3c';
+            const names = item.personen.map(p =>
+                `<a href="/personen/${p.id}/">${p.name}</a>`
+            ).join('<br>');
+            L.marker([item.lat, item.lon], { icon: makeIcon(color) })
+                .bindPopup(`<strong>${item.ort}</strong><br>${names}`)
+                .addTo(map);
+            bounds.push([item.lat, item.lon]);
+            markerCount++;
+        }
+    });
+    markerCountEl.textContent = `${markerCount} Orte`;
+    if (bounds.length > 0) map.fitBounds(bounds, { padding: [30, 30] });
+}
+
+async function geocodeMissing(missing) {
+    if (!missing.length) { progressEl.style.display = 'none'; return; }
+    progressEl.style.display = 'inline-flex';
+    let done = 0;
+    const newlyGeocoded = [];
+    for (const ort of missing) {
+        statusEl.textContent = `Geocodierung ${done + 1}/${missing.length}: ${ort}`;
+        try {
+            const r = await fetch(`/api/geocode/${encodeURIComponent(ort)}/`);
+            const d = await r.json();
+            if (d.lat && d.lon) {
+                newlyGeocoded.push({ ort, lat: d.lat, lon: d.lon });
+            }
+        } catch (e) {}
+        done++;
+        await new Promise(r => setTimeout(r, 1200));
+    }
+    // Add newly geocoded markers
+    if (newlyGeocoded.length) {
+        const resp = await fetch('/api/karte/');
+        const freshData = await resp.json();
+        const newItems = freshData.filter(d =>
+            d.lat && newlyGeocoded.some(n => n.ort === d.ort)
+        );
+        addMarkers(newItems);
+    }
+    statusEl.textContent = `${done} Orte geocodiert`;
+    setTimeout(() => { progressEl.style.display = 'none'; }, 2000);
+}
+
 fetch('/api/karte/')
     .then(r => r.json())
     .then(data => {
-        const bounds = [];
-        data.forEach(item => {
-            if (item.lat && item.lon) {
-                const color = item.typ === 'geburt' ? '#2ecc71' : '#e74c3c';
-                const names = item.personen.map(p =>
-                    `<a href="/personen/${p.id}/">${p.name}</a>`
-                ).join('<br>');
-                L.marker([item.lat, item.lon], { icon: makeIcon(color) })
-                    .bindPopup(`<strong>${item.ort}</strong><br>${names}`)
-                    .addTo(map);
-                bounds.push([item.lat, item.lon]);
-            }
-        });
-        if (bounds.length > 0) map.fitBounds(bounds, { padding: [30, 30] });
-        document.getElementById('markerCount').textContent = bounds.length;
+        addMarkers(data.filter(d => d.geocodiert));
+        const missing = [...new Set(data.filter(d => !d.geocodiert).map(d => d.ort))];
+        if (missing.length) geocodeMissing(missing);
+        else progressEl.style.display = 'none';
     });
-
-const btnGeocode = document.getElementById('btnGeocode');
-if (btnGeocode) {
-    btnGeocode.addEventListener('click', async () => {
-        btnGeocode.disabled = true;
-        btnGeocode.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Geocodiere…';
-        const resp = await fetch('/api/karte/');
-        const data = await resp.json();
-        const missing = data.filter(d => !d.lat).map(d => d.ort);
-        let done = 0;
-        for (const ort of missing) {
-            await fetch(`/api/geocode/${encodeURIComponent(ort)}/`);
-            done++;
-            btnGeocode.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${done}/${missing.length}`;
-            await new Promise(r => setTimeout(r, 1100));
-        }
-        btnGeocode.innerHTML = '<i class="bi bi-check me-1"></i>Fertig — Seite neu laden';
-        btnGeocode.disabled = false;
-        setTimeout(() => location.reload(), 1500);
-    });
-}
 </script>
-<script>document.getElementById('markerCount') || document.write('<span id="markerCount" style="display:none"></span>')</script>
 {% endblock %}

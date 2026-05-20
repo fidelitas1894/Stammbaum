@@ -4,7 +4,7 @@
 <style>
 #graph-container {
     width: 100%;
-    height: 80vh;
+    height: 82vh;
     background: #fff;
     border-radius: 8px;
     overflow: hidden;
@@ -16,12 +16,11 @@
 .node circle {
     stroke-width: 2px;
     cursor: pointer;
-    transition: r 0.15s;
 }
-.node circle:hover { r: 12px; }
 .node.M circle { fill: #cce5ff; stroke: #4a90c4; }
 .node.F circle { fill: #fce4ec; stroke: #c4607a; }
-.node.U circle { fill: #eeeeee; stroke: #888; }
+.node.U circle { fill: #eee;    stroke: #888; }
+.node circle:hover { opacity: 0.75; }
 .node text {
     font-size: 11px;
     font-family: system-ui, sans-serif;
@@ -35,7 +34,6 @@
     fill: none;
     stroke: #bbb;
     stroke-width: 1.5px;
-    stroke-opacity: 0.7;
 }
 
 #tooltip {
@@ -54,14 +52,21 @@
 
 #stats-badge {
     position: absolute;
-    top: 12px;
-    left: 12px;
-    background: rgba(255,255,255,.9);
+    top: 12px; left: 12px;
+    background: rgba(255,255,255,.92);
     border-radius: 6px;
     padding: 6px 12px;
     font-size: 12px;
     color: #555;
     border: 1px solid #ddd;
+    pointer-events: none;
+}
+
+.gen-label {
+    font-size: 11px;
+    fill: #bbb;
+    font-family: system-ui, sans-serif;
+    pointer-events: none;
 }
 </style>
 {% endblock %}
@@ -70,7 +75,7 @@
 <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
     <div>
         <h1 class="mb-0"><i class="bi bi-diagram-3-fill me-2"></i>Gesamter Stammbaum</h1>
-        <div class="text-muted small mt-1">Alle Personen und Verwandtschaftsbeziehungen auf einen Blick</div>
+        <div class="text-muted small mt-1">Alle Personen und Verwandtschaftsbeziehungen – nach Generationen geordnet</div>
     </div>
     <div class="d-flex gap-2 flex-wrap align-items-center">
         <div class="form-check form-switch mb-0">
@@ -94,7 +99,7 @@
     </div>
 </div>
 <div class="text-muted small mt-2 d-flex gap-3 flex-wrap">
-    <span><i class="bi bi-info-circle me-1"></i>Mausrad = Zoom &middot; Ziehen = Schwenken &middot; Knoten ziehen = Position fixieren</span>
+    <span><i class="bi bi-info-circle me-1"></i>Mausrad = Zoom &middot; Ziehen = Schwenken &middot; Klick = Person öffnen</span>
     <span>
         <span class="badge" style="background:#cce5ff;color:#333;border:1px solid #4a90c4">♂ Männlich</span>
         <span class="badge ms-1" style="background:#fce4ec;color:#333;border:1px solid #c4607a">♀ Weiblich</span>
@@ -106,101 +111,130 @@
 {% block extra_js %}
 <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
 <script>
-const W = document.getElementById('graph-container').clientWidth;
-const H = document.getElementById('graph-container').clientHeight;
+const container = document.getElementById('graph-container');
+const W = container.clientWidth;
+const H = container.clientHeight;
 
 const svg = d3.select('#svg-graph');
-const zoom = d3.zoom().scaleExtent([0.05, 4]).on('zoom', e => g.attr('transform', e.transform));
+const zoom = d3.zoom().scaleExtent([0.04, 4]).on('zoom', e => g.attr('transform', e.transform));
 svg.call(zoom);
 const g = svg.append('g');
 
+let labelGroup = null;
 let showNamen = true;
-let simulation, nodeSelection, labelSelection;
 
 fetch('/api/stammbaum/gesamt/')
     .then(r => r.json())
-    .then(data => {
-        const { nodes, links } = data;
+    .then(({ nodes, links }) => {
 
         document.getElementById('stats-badge').textContent =
             `${nodes.length} Personen · ${links.length} Verbindungen`;
 
-        // Link-Objekte mit source/target als Referenz
+        // ── 1. Build adjacency ──────────────────────────────────────────────
         const nodeById = new Map(nodes.map(n => [n.id, n]));
+        const parentsOf = new Map(nodes.map(n => [n.id, []]));  // id → [parentId]
+        const childrenOf = new Map(nodes.map(n => [n.id, []])); // id → [childId]
 
-        simulation = d3.forceSimulation(nodes)
-            .force('link', d3.forceLink(links)
-                .id(d => d.id)
-                .distance(70)
-                .strength(0.8))
-            .force('charge', d3.forceManyBody().strength(-180))
-            .force('center', d3.forceCenter(W / 2, H / 2))
-            .force('collision', d3.forceCollide(22))
-            // Generationskraft: Eltern weiter oben als Kinder
-            .force('y-generation', d3.forceY().y(d => {
-                // Berechne Generation anhand der Kanten
-                return H / 2;
-            }).strength(0.01));
-
-        // Generationsebenen berechnen für vertikale Anordnung
-        const generation = new Map();
-        const roots = new Set(nodes.map(n => n.id));
-        links.forEach(l => roots.delete(typeof l.target === 'object' ? l.target.id : l.target));
-        roots.forEach(id => generation.set(id, 0));
-
-        function setGen(id, gen) {
-            if (!generation.has(id) || generation.get(id) < gen) {
-                generation.set(id, gen);
-                links.forEach(l => {
-                    const src = typeof l.source === 'object' ? l.source.id : l.source;
-                    const tgt = typeof l.target === 'object' ? l.target.id : l.target;
-                    if (src === id) setGen(tgt, gen + 1);
-                });
-            }
-        }
-        roots.forEach(id => setGen(id, 0));
-        const maxGen = Math.max(...generation.values()) || 1;
-
-        // Startpositionen nach Generation
-        nodes.forEach(n => {
-            const gen = generation.get(n.id) || 0;
-            n.y = (gen / maxGen) * (H * 0.8) + H * 0.1;
+        links.forEach(l => {
+            const src = l.source, tgt = l.target;
+            childrenOf.get(src)?.push(tgt);
+            parentsOf.get(tgt)?.push(src);
         });
 
-        simulation.force('y-generation', d3.forceY()
-            .y(d => {
-                const gen = generation.get(d.id) || 0;
-                return (gen / maxGen) * (H * 0.8) + H * 0.1;
+        // ── 2. Assign generation via BFS from roots ─────────────────────────
+        const generation = new Map();
+        const roots = nodes.filter(n => parentsOf.get(n.id).length === 0);
+        const queue = roots.map(n => n.id);
+        roots.forEach(n => generation.set(n.id, 0));
+
+        while (queue.length) {
+            const id = queue.shift();
+            const gen = generation.get(id);
+            childrenOf.get(id).forEach(cid => {
+                if (!generation.has(cid) || generation.get(cid) < gen + 1) {
+                    generation.set(cid, gen + 1);
+                    queue.push(cid);
+                }
+            });
+        }
+        nodes.forEach(n => { if (!generation.has(n.id)) generation.set(n.id, 0); });
+
+        const maxGen = Math.max(...generation.values());
+
+        // ── 3. Group by generation ──────────────────────────────────────────
+        const genGroups = Array.from({ length: maxGen + 1 }, () => []);
+        nodes.forEach(n => genGroups[generation.get(n.id)].push(n));
+
+        // ── 4. Sort within each generation by parent midpoint (3 passes) ────
+        genGroups.forEach((grp, gi) => grp.forEach((n, i) => { n._xi = i; }));
+
+        for (let pass = 0; pass < 4; pass++) {
+            for (let gi = 1; gi <= maxGen; gi++) {
+                genGroups[gi].forEach(n => {
+                    const pxs = parentsOf.get(n.id)
+                        .map(pid => nodeById.get(pid))
+                        .filter(Boolean)
+                        .map(p => p._xi);
+                    n._sortKey = pxs.length
+                        ? pxs.reduce((a, b) => a + b) / pxs.length
+                        : n._xi;
+                });
+                genGroups[gi].sort((a, b) => a._sortKey - b._sortKey);
+                genGroups[gi].forEach((n, i) => { n._xi = i; });
+            }
+        }
+
+        // ── 5. Assign pixel coordinates ────────────────────────────────────
+        const NODE_W = 140;  // horizontal spacing
+        const NODE_H = 110;  // vertical spacing (per generation)
+
+        genGroups.forEach((grp, gi) => {
+            const totalW = (grp.length - 1) * NODE_W;
+            grp.forEach((n, i) => {
+                n.x = i * NODE_W - totalW / 2;
+                n.y = gi * NODE_H;
+            });
+        });
+
+        // ── 6. Draw generation labels ───────────────────────────────────────
+        const labelG = g.append('g').attr('class', 'gen-labels');
+        genGroups.forEach((grp, gi) => {
+            if (!grp.length) return;
+            const sample = grp[0];
+            const birthYears = grp.map(n => n.geburtsjahr).filter(Boolean);
+            if (birthYears.length) {
+                const avg = Math.round(birthYears.reduce((a, b) => a + b) / birthYears.length);
+                const decade = Math.floor(avg / 10) * 10;
+                labelG.append('text')
+                    .attr('class', 'gen-label')
+                    .attr('x', Math.min(...grp.map(n => n.x)) - 20)
+                    .attr('y', sample.y + 4)
+                    .attr('text-anchor', 'end')
+                    .text(`~${decade}er`);
+            }
+        });
+
+        // ── 7. Draw elbow-style links ───────────────────────────────────────
+        function elbowPath(src, tgt) {
+            const my = (src.y + 16 + tgt.y - 16) / 2;
+            return `M${src.x},${src.y + 16} V${my} H${tgt.x} V${tgt.y - 16}`;
+        }
+
+        g.append('g').attr('class', 'links')
+            .selectAll('path').data(links).enter().append('path')
+            .attr('class', 'link')
+            .attr('d', l => {
+                const s = nodeById.get(l.source), t = nodeById.get(l.target);
+                return s && t ? elbowPath(s, t) : null;
             })
-            .strength(0.35));
+            .filter(l => nodeById.get(l.source) && nodeById.get(l.target));
 
-        // Links zeichnen
-        const linkSel = g.append('g').attr('class', 'links')
-            .selectAll('line')
-            .data(links)
-            .enter().append('line')
-            .attr('class', 'link');
-
-        // Nodes
+        // ── 8. Draw nodes ───────────────────────────────────────────────────
         const nodeSel = g.append('g').attr('class', 'nodes')
-            .selectAll('.node')
-            .data(nodes)
-            .enter().append('g')
+            .selectAll('.node').data(nodes).enter().append('g')
             .attr('class', d => `node ${d.geschlecht}`)
-            .call(d3.drag()
-                .on('start', (e, d) => {
-                    if (!e.active) simulation.alphaTarget(0.3).restart();
-                    d.fx = d.x; d.fy = d.y;
-                })
-                .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
-                .on('end', (e, d) => {
-                    if (!e.active) simulation.alphaTarget(0);
-                    // Position fixiert lassen nach Drag
-                }))
-            .on('click', (e, d) => {
-                if (e.defaultPrevented) return;
-                window.location.href = d.url;
-            })
+            .attr('transform', d => `translate(${d.x},${d.y})`)
+            .on('click', (e, d) => { window.location.href = d.url; })
             .on('mouseover', (e, d) => {
                 const tt = document.getElementById('tooltip');
                 tt.innerHTML = `<strong>${d.name}</strong>`
@@ -209,7 +243,7 @@ fetch('/api/stammbaum/gesamt/')
             })
             .on('mousemove', e => {
                 const tt = document.getElementById('tooltip');
-                const rect = document.getElementById('graph-container').getBoundingClientRect();
+                const rect = container.getBoundingClientRect();
                 let x = e.clientX - rect.left + 14;
                 let y = e.clientY - rect.top - 10;
                 if (x + 220 > rect.width) x = e.clientX - rect.left - 230;
@@ -218,55 +252,45 @@ fetch('/api/stammbaum/gesamt/')
             })
             .on('mouseout', () => { document.getElementById('tooltip').style.display = 'none'; });
 
-        nodeSel.append('circle').attr('r', 9);
+        nodeSel.append('circle').attr('r', 14);
 
-        const labelSel = nodeSel.append('g').attr('class', 'label');
-        labelSel.append('text')
-            .attr('class', 'name')
-            .attr('x', 13)
-            .attr('dy', '-0.1em')
-            .text(d => d.name.length > 20 ? d.name.substr(0, 18) + '…' : d.name);
-        labelSel.append('text')
-            .attr('class', 'dates')
-            .attr('x', 13)
-            .attr('dy', '1em')
-            .text(d => d.lebensdaten);
-
-        // Geschlechts-Symbol im Kreis
+        // Gender symbol
         nodeSel.append('text')
-            .attr('text-anchor', 'middle')
-            .attr('dy', '0.35em')
-            .attr('font-size', '10px')
+            .attr('text-anchor', 'middle').attr('dy', '0.35em').attr('font-size', '11px')
             .style('pointer-events', 'none')
             .text(d => d.geschlecht === 'M' ? '♂' : d.geschlecht === 'F' ? '♀' : '?')
             .style('fill', d => d.geschlecht === 'M' ? '#1a5a8e' : d.geschlecht === 'F' ? '#8e2a42' : '#555');
 
-        simulation.on('tick', () => {
-            linkSel
-                .attr('x1', d => d.source.x)
-                .attr('y1', d => d.source.y)
-                .attr('x2', d => d.target.x)
-                .attr('y2', d => d.target.y);
-            nodeSel.attr('transform', d => `translate(${d.x},${d.y})`);
-        });
+        // Labels
+        labelGroup = nodeSel.append('g').attr('class', 'label');
+        labelGroup.append('text').attr('class', 'name')
+            .attr('x', 18).attr('dy', '-0.1em')
+            .text(d => d.name.length > 18 ? d.name.substr(0, 16) + '…' : d.name);
+        labelGroup.append('text').attr('class', 'dates')
+            .attr('x', 18).attr('dy', '1.1em')
+            .text(d => d.lebensdaten);
 
-        nodeSelection = nodeSel;
-        labelSelection = labelSel;
+        // ── 9. Initial fit ──────────────────────────────────────────────────
+        fitView();
     });
+
+function fitView() {
+    try {
+        const bounds = g.node().getBBox();
+        if (!bounds.width) return;
+        const scale = Math.min(1, (W - 60) / bounds.width, (H - 60) / bounds.height);
+        const tx = (W - bounds.width * scale) / 2 - bounds.x * scale;
+        const ty = (H - bounds.height * scale) / 2 - bounds.y * scale;
+        svg.transition().duration(500)
+            .call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+    } catch(e) {}
+}
 
 document.getElementById('toggleNamen').addEventListener('change', function() {
     showNamen = this.checked;
-    if (labelSelection) labelSelection.style('display', showNamen ? null : 'none');
+    if (labelGroup) labelGroup.style('display', showNamen ? null : 'none');
 });
 
-document.getElementById('btnZentrieren').addEventListener('click', () => {
-    svg.transition().duration(600).call(
-        zoom.transform,
-        d3.zoomIdentity.translate(W / 2, H / 2).scale(0.8).translate(-W / 2, -H / 2)
-    );
-    if (simulation) {
-        simulation.alpha(0.3).restart();
-    }
-});
+document.getElementById('btnZentrieren').addEventListener('click', fitView);
 </script>
 {% endblock %}

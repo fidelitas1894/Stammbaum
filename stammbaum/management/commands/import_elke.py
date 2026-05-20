@@ -77,7 +77,7 @@ class Command(BaseCommand):
                     geschlecht = geschlecht_raw if geschlecht_raw in ('M', 'F') else 'U'
                     geburtsdatum = self._parse_datum(geb_raw)
                     sterbedatum = self._parse_datum(tod_raw)
-                    geburtsort, sterbeort, konfession = self._parse_rest(rest_text)
+                    geburtsort, sterbeort, geburtsname, konfession = self._parse_rest(rest_text)
 
                     person, created = Person.objects.update_or_create(
                         elke_nr=elke_nr,
@@ -91,6 +91,7 @@ class Command(BaseCommand):
                             'geburtsort': geburtsort,
                             'sterbedatum': sterbedatum,
                             'sterbeort': sterbeort,
+                            'geburtsname': geburtsname,
                             'konfession': konfession,
                         },
                     )
@@ -183,31 +184,55 @@ class Command(BaseCommand):
         except ValueError:
             return None
 
+    # Präpositionen die auf mehrteilige Ortsnamen hinweisen
+    _PREP = {'am', 'im', 'auf', 'zu', 'bei', 'an', 'in', 'von', 'a.', 'b.', 'ob', 'near'}
+
     def _parse_rest(self, text):
-        """Parst den Resttext nach den Datumsfeldern: Geburtsort, Sterbeort, Konfession."""
-        # Konfession extrahieren
+        """Parst den Resttext nach den Datumsfeldern.
+
+        ELKE-Format: Geburtsort Sterbeort  Geburtsname  Konfession ...
+        Geburtsort und Sterbeort sind durch einfaches Leerzeichen getrennt,
+        Geburtsname folgt nach doppeltem Leerzeichen.
+        """
         konfession = ''
         km = self.KONFESSION_RE.search(text)
         if km:
             konfession = km.group(1).lower()
 
-        # Felder vor der Konfession (oder vor der Reg-Nr) sind Ortsangaben
         vor_konfession = text[:km.start()] if km else text
-        # Entferne Reg-Nr-ähnliche Tokens (z.B. "169/1898")
         vor_konfession = re.sub(r'\d+/\d+', '', vor_konfession)
-        # Entferne Unterstriche-Platzhalter
         vor_konfession = re.sub(r'_{3,}', ' ', vor_konfession)
 
         teile = re.split(r'\s{2,}', vor_konfession.strip())
         teile = [t.strip() for t in teile if t.strip() and len(t.strip()) > 1]
 
-        geburtsort = teile[0] if len(teile) > 0 else ''
-        sterbeort = teile[1] if len(teile) > 1 else ''
+        geburtsort = ''
+        sterbeort = ''
+        geburtsname = ''
 
-        # Bereinigung: Orte dürfen keine Zahlen-only oder Kürzel enthalten
-        if re.fullmatch(r'[\d/\s]+', geburtsort):
+        if teile:
+            # Erstes Segment: enthält Geburtsort und optional Sterbeort (durch Leerzeichen getrennt)
+            woerter = teile[0].split()
+            if (len(woerter) >= 2
+                    and re.match(r'^[A-ZÄÖÜa-zäöüß\-\/]+$', woerter[-1])
+                    and woerter[-2].lower() not in self._PREP
+                    and not woerter[-2].startswith('(')):
+                # Letztes Wort = Sterbeort, Rest = Geburtsort
+                sterbeort = woerter[-1]
+                geburtsort = ' '.join(woerter[:-1])
+            else:
+                geburtsort = teile[0]
+
+            # Zweites Segment (nach doppeltem Leerzeichen) = Geburtsname
+            if len(teile) > 1:
+                name_m = re.match(r'^([A-ZÄÖÜ][a-zäöüßA-ZÄÖÜ]+)', teile[1].strip())
+                if name_m:
+                    geburtsname = name_m.group(1)
+
+        # Bereinigung: reine Platzhalter/Zahlen als leer behandeln
+        if re.fullmatch(r'[\d/\s\?\*]+', geburtsort):
             geburtsort = ''
-        if re.fullmatch(r'[\d/\s]+', sterbeort):
+        if re.fullmatch(r'[\d/\s\?\*]+', sterbeort):
             sterbeort = ''
 
-        return geburtsort[:200], sterbeort[:200], konfession
+        return geburtsort[:200], sterbeort[:200], geburtsname[:200], konfession

@@ -16,6 +16,7 @@ class Person(models.Model):
     geburtsort = models.CharField(max_length=200, blank=True)
     sterbedatum = models.DateField(null=True, blank=True)
     sterbeort = models.CharField(max_length=200, blank=True)
+    geburtsname = models.CharField(max_length=200, blank=True, verbose_name='Geburtsname (Mädchenname)')
     konfession = models.CharField(max_length=100, blank=True)
     beruf = models.CharField(max_length=200, blank=True)
     todesursache = models.CharField(max_length=200, blank=True)

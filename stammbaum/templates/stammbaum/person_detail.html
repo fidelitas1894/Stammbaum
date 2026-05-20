@@ -36,11 +36,12 @@
             <div class="card-header"><strong>Stammdaten</strong></div>
             <div class="card-body">
                 <dl class="row mb-0">
-                    {% if person.geburtsdatum or person.geburtsort %}
+                    {% if person.geburtsdatum or person.geburtsort or person.geburtsname %}
                     <dt class="col-sm-4">Geburt</dt>
                     <dd class="col-sm-8">
                         {% if person.geburtsdatum %}{{ person.geburtsdatum|date:"d.m.Y" }}{% endif %}
                         {% if person.geburtsort %}<span class="text-muted">in</span> {{ person.geburtsort }}{% endif %}
+                        {% if person.geburtsname %}<span class="text-muted ms-2">(geb. {{ person.geburtsname }})</span>{% endif %}
                     </dd>
                     {% endif %}
                     {% if person.sterbedatum or person.sterbeort %}

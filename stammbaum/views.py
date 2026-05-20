@@ -115,10 +115,13 @@ def stammbaum(request):
         except Person.DoesNotExist:
             pass
     if not start_person:
-        start_person = (
-            Person.objects.filter(geburtsdatum__isnull=False).order_by('geburtsdatum').first()
-            or Person.objects.first()
+        # Prefer someone with the most descendants
+        top = (
+            Person.objects.annotate(
+                kinder_count=Count('kinder_als_vater') + Count('kinder_als_mutter')
+            ).order_by('-kinder_count').first()
         )
+        start_person = top or Person.objects.first()
     return render(request, 'stammbaum/stammbaum.html', {
         'personen': personen,
         'start_person': start_person,
@@ -185,6 +188,99 @@ def stammbaum_json(request, person_id):
         except Elternschaft.DoesNotExist:
             pass
         return node
+
+    if modus == 'beides':
+        all_nodes = {}
+        all_links = []
+        link_set = set()
+
+        def add_n(p):
+            if p.pk not in all_nodes:
+                all_nodes[p.pk] = person_node(p)
+
+        def add_l(src, tgt, typ):
+            k = (src, tgt, typ)
+            if k not in link_set:
+                link_set.add(k)
+                all_links.append({'source': src, 'target': tgt, 'typ': typ})
+
+        anc_vis = set()
+
+        def collect_anc(p, depth):
+            if p.pk in anc_vis or depth > tiefe_max:
+                return
+            anc_vis.add(p.pk)
+            add_n(p)
+            try:
+                e = p.elternschaft_kind
+                if e.vater:
+                    add_n(e.vater)
+                    add_l(e.vater.pk, p.pk, 'elternteil')
+                    collect_anc(e.vater, depth + 1)
+                if e.mutter:
+                    add_n(e.mutter)
+                    add_l(e.mutter.pk, p.pk, 'elternteil')
+                    collect_anc(e.mutter, depth + 1)
+            except Elternschaft.DoesNotExist:
+                pass
+
+        desc_vis = set()
+
+        def collect_desc(p, depth):
+            if p.pk in desc_vis or depth > tiefe_max:
+                return
+            desc_vis.add(p.pk)
+            add_n(p)
+            kinder = list(Person.objects.filter(
+                Q(elternschaft_kind__vater=p) | Q(elternschaft_kind__mutter=p)
+            ).distinct())
+            for k in kinder:
+                add_n(k)
+                add_l(p.pk, k.pk, 'elternteil')
+                collect_desc(k, depth + 1)
+
+        collect_anc(root, 0)
+        collect_desc(root, 0)
+
+        # Siblings of focal person
+        try:
+            e_root = root.elternschaft_kind
+            sib_q = Q()
+            if e_root.vater:
+                sib_q |= Q(elternschaft_kind__vater=e_root.vater)
+            if e_root.mutter:
+                sib_q |= Q(elternschaft_kind__mutter=e_root.mutter)
+            if sib_q:
+                for s in Person.objects.filter(sib_q).exclude(pk=root.pk).distinct():
+                    add_n(s)
+                    if e_root.vater:
+                        add_l(e_root.vater.pk, s.pk, 'elternteil')
+                    if e_root.mutter:
+                        add_l(e_root.mutter.pk, s.pk, 'elternteil')
+        except Elternschaft.DoesNotExist:
+            pass
+
+        # Spouses of all collected persons
+        ehe_done = set()
+        for pk in list(all_nodes.keys()):
+            try:
+                p_obj = Person.objects.get(pk=pk)
+            except Person.DoesNotExist:
+                continue
+            partner_qs, _ = p_obj.get_partner()
+            for partner in partner_qs:
+                add_n(partner)
+                ep = (min(pk, partner.pk), max(pk, partner.pk))
+                if ep not in ehe_done:
+                    ehe_done.add(ep)
+                    add_l(ep[0], ep[1], 'ehe')
+
+        return JsonResponse({
+            'type': 'graph',
+            'focal_id': root.pk,
+            'nodes': list(all_nodes.values()),
+            'links': all_links,
+        })
 
     if modus == 'vorfahren':
         data = vorfahren(root, 0)
@@ -344,19 +440,20 @@ def karte_json(request):
 
     alle_orte = list(set(list(orte_geburt.keys()) + list(orte_tod.keys())))
     ort_coords = {}
-    for ort_obj in Ort.objects.filter(name__in=alle_orte, lat__isnull=False):
-        ort_coords[ort_obj.name] = {'lat': ort_obj.lat, 'lon': ort_obj.lon}
+    for ort_obj in Ort.objects.filter(name__in=alle_orte):
+        ort_coords[ort_obj.name] = {
+            'lat': ort_obj.lat, 'lon': ort_obj.lon,
+            'geocodiert': ort_obj.lat is not None,
+        }
 
     result = []
     for name, data in {**orte_geburt, **orte_tod}.items():
-        if name in ort_coords:
-            result.append({**data, **ort_coords[name]})
+        coords = ort_coords.get(name, {'lat': None, 'lon': None, 'geocodiert': False})
+        result.append({**data, **coords})
     return JsonResponse(result, safe=False)
 
 
 def geocode_ort(request, ort_name):
-    if not request.user.is_authenticated:
-        return JsonResponse({'error': 'Login erforderlich'}, status=403)
     ort, created = Ort.objects.get_or_create(name=ort_name)
     if ort.lat is None:
         try:

@@ -7,7 +7,7 @@ class PersonForm(forms.ModelForm):
         model = Person
         fields = [
             'nachname', 'vornamen', 'rufname', 'titel', 'geschlecht',
-            'geburtsdatum', 'geburtsort', 'sterbedatum', 'sterbeort',
+            'geburtsdatum', 'geburtsort', 'geburtsname', 'sterbedatum', 'sterbeort',
             'konfession', 'beruf', 'todesursache', 'anmerkungen', 'foto',
         ]
         widgets = {
@@ -20,6 +20,7 @@ class PersonForm(forms.ModelForm):
             'titel': forms.TextInput(attrs={'class': 'form-control'}),
             'geschlecht': forms.Select(attrs={'class': 'form-select'}),
             'geburtsort': forms.TextInput(attrs={'class': 'form-control'}),
+            'geburtsname': forms.TextInput(attrs={'class': 'form-control'}),
             'sterbeort': forms.TextInput(attrs={'class': 'form-control'}),
             'konfession': forms.TextInput(attrs={'class': 'form-control'}),
             'beruf': forms.TextInput(attrs={'class': 'form-control'}),
