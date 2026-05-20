@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Stammbaum{% endblock %}</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+    <style>
+        body { background-color: #f8f5f0; }
+        .navbar { background-color: #3d2b1f !important; }
+        .navbar-brand, .nav-link { color: #f5e6c8 !important; }
+        .nav-link:hover { color: #fff !important; }
+        .card { border: none; box-shadow: 0 1px 4px rgba(0,0,0,.1); }
+        .stat-card { background: linear-gradient(135deg, #6b4c3b, #3d2b1f); color: white; }
+        .badge-gender-M { background-color: #4a90c4; }
+        .badge-gender-F { background-color: #c4607a; }
+        .badge-gender-U { background-color: #888; }
+        a { color: #6b4c3b; }
+        a:hover { color: #3d2b1f; }
+        .btn-primary { background-color: #6b4c3b; border-color: #6b4c3b; }
+        .btn-primary:hover { background-color: #3d2b1f; border-color: #3d2b1f; }
+        .breadcrumb-item + .breadcrumb-item::before { color: #6b4c3b; }
+    </style>
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+<nav class="navbar navbar-expand-lg mb-4">
+    <div class="container">
+        <a class="navbar-brand fw-bold" href="/">
+            <i class="bi bi-diagram-3-fill me-2"></i>Stammbaum
+        </a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navMenu">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navMenu">
+            <ul class="navbar-nav me-auto">
+                <li class="nav-item"><a class="nav-link" href="{% url 'stammbaum' %}"><i class="bi bi-diagram-3 me-1"></i>Stammbaum</a></li>
+                <li class="nav-item"><a class="nav-link" href="{% url 'personen_liste' %}"><i class="bi bi-people me-1"></i>Personen</a></li>
+                <li class="nav-item"><a class="nav-link" href="{% url 'karte' %}"><i class="bi bi-map me-1"></i>Karte</a></li>
+                <li class="nav-item"><a class="nav-link" href="{% url 'statistiken' %}"><i class="bi bi-bar-chart me-1"></i>Statistiken</a></li>
+                <li class="nav-item"><a class="nav-link" href="{% url 'suche' %}"><i class="bi bi-search me-1"></i>Suche</a></li>
+            </ul>
+            <ul class="navbar-nav ms-auto">
+                {% if user.is_authenticated %}
+                <li class="nav-item"><a class="nav-link" href="{% url 'import' %}"><i class="bi bi-upload me-1"></i>Import</a></li>
+                <li class="nav-item"><a class="nav-link" href="{% url 'person_neu' %}"><i class="bi bi-person-plus me-1"></i>Neu</a></li>
+                <li class="nav-item dropdown">
+                    <a class="nav-link dropdown-toggle" href="#" data-bs-toggle="dropdown">
+                        <i class="bi bi-person-circle me-1"></i>{{ user.username }}
+                    </a>
+                    <ul class="dropdown-menu dropdown-menu-end">
+                        <li><a class="dropdown-item" href="/admin/">Admin</a></li>
+                        <li><hr class="dropdown-divider"></li>
+                        <li><a class="dropdown-item" href="{% url 'logout' %}">Abmelden</a></li>
+                    </ul>
+                </li>
+                {% else %}
+                <li class="nav-item"><a class="nav-link" href="{% url 'login' %}"><i class="bi bi-box-arrow-in-right me-1"></i>Anmelden</a></li>
+                {% endif %}
+            </ul>
+        </div>
+    </div>
+</nav>
+
+<div class="container">
+    {% for message in messages %}
+    <div class="alert alert-{{ message.tags|default:'info' }} alert-dismissible fade show" role="alert">
+        {{ message }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+    {% endfor %}
+
+    {% block content %}{% endblock %}
+</div>
+
+<footer class="mt-5 py-3 text-center text-muted small">
+    <div class="container">
+        <a href="{% url 'export_gedcom' %}"><i class="bi bi-download me-1"></i>GEDCOM exportieren</a>
+        &nbsp;·&nbsp;
+        <a href="/admin/">Admin</a>
+    </div>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+{% block extra_js %}{% endblock %}
+</body>
+</html>

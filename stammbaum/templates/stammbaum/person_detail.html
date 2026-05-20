@@ -1,0 +1,165 @@
+{% extends "stammbaum/base.html" %}
+{% block title %}{{ person.vollname }}{% endblock %}
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="/">Start</a></li>
+        <li class="breadcrumb-item"><a href="{% url 'personen_liste' %}">Personen</a></li>
+        <li class="breadcrumb-item active">{{ person.vollname }}</li>
+    </ol>
+</nav>
+
+<div class="d-flex justify-content-between align-items-start mb-3">
+    <div>
+        <h1 class="mb-0">
+            <span class="badge me-2
+                {% if person.geschlecht == 'M' %}bg-primary
+                {% elif person.geschlecht == 'F' %}bg-danger
+                {% else %}bg-secondary{% endif %} fs-6 align-middle">
+                {{ person.get_geschlecht_display }}
+            </span>
+            {{ person.vollname }}
+        </h1>
+        <div class="text-muted mt-1">{{ person.lebensdaten }}</div>
+    </div>
+    {% if user.is_authenticated %}
+    <a href="{% url 'person_bearbeiten' person.pk %}" class="btn btn-outline-primary">
+        <i class="bi bi-pencil me-1"></i>Bearbeiten
+    </a>
+    {% endif %}
+</div>
+
+<div class="row g-4">
+    <!-- Stammdaten -->
+    <div class="col-md-{% if person.foto %}8{% else %}12{% endif %}">
+        <div class="card">
+            <div class="card-header"><strong>Stammdaten</strong></div>
+            <div class="card-body">
+                <dl class="row mb-0">
+                    {% if person.geburtsdatum or person.geburtsort %}
+                    <dt class="col-sm-4">Geburt</dt>
+                    <dd class="col-sm-8">
+                        {% if person.geburtsdatum %}{{ person.geburtsdatum|date:"d.m.Y" }}{% endif %}
+                        {% if person.geburtsort %}<span class="text-muted">in</span> {{ person.geburtsort }}{% endif %}
+                    </dd>
+                    {% endif %}
+                    {% if person.sterbedatum or person.sterbeort %}
+                    <dt class="col-sm-4">Tod</dt>
+                    <dd class="col-sm-8">
+                        {% if person.sterbedatum %}{{ person.sterbedatum|date:"d.m.Y" }}{% endif %}
+                        {% if person.sterbeort %}<span class="text-muted">in</span> {{ person.sterbeort }}{% endif %}
+                        {% if person.todesursache %}<span class="text-muted">({{ person.todesursache }})</span>{% endif %}
+                    </dd>
+                    {% endif %}
+                    {% if person.konfession %}
+                    <dt class="col-sm-4">Konfession</dt>
+                    <dd class="col-sm-8">{{ person.konfession }}</dd>
+                    {% endif %}
+                    {% if person.beruf %}
+                    <dt class="col-sm-4">Beruf</dt>
+                    <dd class="col-sm-8">{{ person.beruf }}</dd>
+                    {% endif %}
+                    {% if person.anmerkungen %}
+                    <dt class="col-sm-4">Anmerkungen</dt>
+                    <dd class="col-sm-8">{{ person.anmerkungen }}</dd>
+                    {% endif %}
+                    {% if person.elke_nr %}
+                    <dt class="col-sm-4">ELKE-Nr.</dt>
+                    <dd class="col-sm-8 text-muted">{{ person.elke_nr }}</dd>
+                    {% endif %}
+                </dl>
+            </div>
+        </div>
+    </div>
+
+    {% if person.foto %}
+    <div class="col-md-4">
+        <img src="{{ person.foto.url }}" class="img-fluid rounded shadow" alt="{{ person.vollname }}">
+    </div>
+    {% endif %}
+
+    <!-- Familie -->
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header"><strong>Familie</strong></div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-md-3">
+                        <h6 class="text-muted mb-2">Eltern</h6>
+                        {% if vater %}<div><i class="bi bi-person text-primary me-1"></i><a href="{{ vater.get_absolute_url }}">{{ vater.vollname }}</a></div>{% endif %}
+                        {% if mutter %}<div><i class="bi bi-person text-danger me-1"></i><a href="{{ mutter.get_absolute_url }}">{{ mutter.vollname }}</a></div>{% endif %}
+                        {% if not vater and not mutter %}<span class="text-muted small">Keine bekannt</span>{% endif %}
+                    </div>
+                    <div class="col-md-3">
+                        <h6 class="text-muted mb-2">Partner / Ehe</h6>
+                        {% for p in partner %}
+                        <div><i class="bi bi-heart-fill text-danger me-1"></i><a href="{{ p.get_absolute_url }}">{{ p.vollname }}</a></div>
+                        {% empty %}<span class="text-muted small">Keine bekannt</span>
+                        {% endfor %}
+                    </div>
+                    <div class="col-md-3">
+                        <h6 class="text-muted mb-2">Kinder ({{ kinder.count }})</h6>
+                        {% for k in kinder %}
+                        <div><i class="bi bi-person-fill me-1 text-secondary"></i><a href="{{ k.get_absolute_url }}">{{ k.vollname }}</a></div>
+                        {% empty %}<span class="text-muted small">Keine bekannt</span>
+                        {% endfor %}
+                    </div>
+                    <div class="col-md-3">
+                        <h6 class="text-muted mb-2">Geschwister</h6>
+                        {% for g in geschwister %}
+                        <div><i class="bi bi-person me-1 text-secondary"></i><a href="{{ g.get_absolute_url }}">{{ g.vollname }}</a></div>
+                        {% empty %}<span class="text-muted small">Keine bekannt</span>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Stammbaum-Link -->
+    <div class="col-12">
+        <a href="{% url 'stammbaum' %}?person={{ person.pk }}" class="btn btn-outline-secondary me-2">
+            <i class="bi bi-diagram-3 me-1"></i>Im Stammbaum anzeigen
+        </a>
+        {% if user.is_authenticated %}
+        <a href="{% url 'person_neu' %}" class="btn btn-outline-primary">
+            <i class="bi bi-person-plus me-1"></i>Neue Person anlegen
+        </a>
+        {% endif %}
+    </div>
+
+    <!-- Quellen -->
+    {% if quellen %}
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header"><strong>Quellen</strong></div>
+            <ul class="list-group list-group-flush">
+                {% for q in quellen %}
+                <li class="list-group-item">
+                    <span class="badge bg-secondary me-2">{{ q.get_typ_display }}</span>{{ q.beschreibung }}
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Änderungshistorie (nur eingeloggt) -->
+    {% if aenderungen %}
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header"><strong>Änderungshistorie</strong></div>
+            <ul class="list-group list-group-flush small">
+                {% for log in aenderungen|slice:":10" %}
+                <li class="list-group-item">
+                    <span class="badge bg-light text-dark border me-2">{{ log.get_aktion_display }}</span>
+                    {{ log.zeitstempel|date:"d.m.Y H:i" }}
+                    <span class="text-muted">von {{ log.benutzer }}</span>
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,99 @@
+{% extends "stammbaum/base.html" %}
+{% block title %}ELKE-Import{% endblock %}
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="/">Start</a></li>
+        <li class="breadcrumb-item active">Import</li>
+    </ol>
+</nav>
+
+<h1 class="mb-4"><i class="bi bi-upload me-2"></i>ELKE-Dateien importieren</h1>
+
+<div class="row g-4">
+    <!-- Upload -->
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header"><strong>1. Dateien hochladen</strong></div>
+            <div class="card-body">
+                <form method="post" enctype="multipart/form-data">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="upload">
+                    <div class="mb-3">
+                        <label class="form-label">{{ form.dateien.label }}</label>
+                        <input type="file" name="dateien" multiple accept=".ELK,.GM3,.elk,.gm3"
+                               class="form-control {% if form.dateien.errors %}is-invalid{% endif %}">
+                        <div class="form-text">{{ form.dateien.help_text }}</div>
+                        {% for error in form.dateien.errors %}
+                        <div class="invalid-feedback d-block">{{ error }}</div>
+                        {% endfor %}
+                    </div>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-cloud-upload me-2"></i>Hochladen
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Vorhandene Dateien + Import starten -->
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header"><strong>2. Import starten</strong></div>
+            <div class="card-body">
+                {% if vorhandene %}
+                <p class="mb-2">Folgende Dateien liegen im Import-Verzeichnis:</p>
+                <ul class="list-group list-group-flush mb-3">
+                    {% for f in vorhandene %}
+                    <li class="list-group-item py-1 px-0">
+                        <i class="bi bi-file-earmark-text me-2 text-muted"></i>{{ f }}
+                    </li>
+                    {% endfor %}
+                </ul>
+                <form method="post">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="importieren">
+                    <button type="submit" class="btn btn-success">
+                        <i class="bi bi-play-circle me-2"></i>Import jetzt starten
+                    </button>
+                </form>
+                {% else %}
+                <div class="text-muted">
+                    <i class="bi bi-folder2-open me-2"></i>
+                    Noch keine Dateien vorhanden. Bitte zuerst hochladen.
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if import_output %}
+<div class="card mt-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <strong>Import-Ausgabe</strong>
+        <span class="badge bg-success">Erfolgreich</span>
+    </div>
+    <div class="card-body">
+        <pre class="mb-0 small" style="white-space:pre-wrap;max-height:400px;overflow-y:auto">{{ import_output }}</pre>
+    </div>
+</div>
+{% endif %}
+
+{% if import_fehler %}
+<div class="card mt-4 border-danger">
+    <div class="card-header bg-danger text-white"><strong>Fehler beim Import</strong></div>
+    <div class="card-body">
+        <pre class="mb-0 small text-danger">{{ import_fehler }}</pre>
+    </div>
+</div>
+{% endif %}
+
+<div class="card mt-4 border-0 bg-light">
+    <div class="card-body small text-muted">
+        <strong>Hinweis:</strong> Dateien werden nach <code>/app/import/</code> hochgeladen.
+        Der Import ist idempotent — mehrfaches Ausführen erzeugt keine Duplikate.
+        Unterstützte Formate: <code>.ELK</code>, <code>.GM3</code> (ELKE-Genealogie-Software, Encoding: Latin-1).
+    </div>
+</div>
+{% endblock %}

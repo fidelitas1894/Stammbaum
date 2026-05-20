@@ -1,0 +1,80 @@
+{% extends "stammbaum/base.html" %}
+{% block title %}Stammbaum - Startseite{% endblock %}
+{% block content %}
+<h1 class="mb-4"><i class="bi bi-house-heart me-2"></i>Familienstammbaum</h1>
+
+<div class="row g-3 mb-4">
+    <div class="col-6 col-md-3">
+        <div class="card stat-card p-3 text-center rounded-3">
+            <div class="fs-1 fw-bold">{{ personen_count }}</div>
+            <div class="small">Personen</div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card stat-card p-3 text-center rounded-3">
+            <div class="fs-1 fw-bold">{{ nachnamen_count }}</div>
+            <div class="small">Familiennamen</div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card stat-card p-3 text-center rounded-3">
+            <div class="fs-1 fw-bold">{{ generationen }}</div>
+            <div class="small">Generationen</div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="card stat-card p-3 text-center rounded-3">
+            <div class="fs-2 fw-bold">
+                {% if aelteste %}{{ aelteste.geburtsjahr }}{% else %}—{% endif %}
+            </div>
+            <div class="small">Älteste bekannte Geburt</div>
+        </div>
+    </div>
+</div>
+
+{% if haeufigster_nachname %}
+<div class="alert alert-light border mb-4">
+    <i class="bi bi-star-fill text-warning me-2"></i>
+    Häufigster Familienname: <strong>{{ haeufigster_nachname.nachname }}</strong>
+    ({{ haeufigster_nachname.anzahl }}× belegt)
+</div>
+{% endif %}
+
+<div class="row g-3">
+    <div class="col-md-4">
+        <a href="{% url 'stammbaum' %}" class="card p-4 text-decoration-none text-dark h-100">
+            <div class="text-center mb-2 fs-1 text-primary"><i class="bi bi-diagram-3"></i></div>
+            <h5 class="text-center">Interaktiver Stammbaum</h5>
+            <p class="text-muted small text-center">D3.js-Baum mit Zoom und Navigation zwischen Generationen</p>
+        </a>
+    </div>
+    <div class="col-md-4">
+        <a href="{% url 'personen_liste' %}" class="card p-4 text-decoration-none text-dark h-100">
+            <div class="text-center mb-2 fs-1" style="color:#6b4c3b"><i class="bi bi-people"></i></div>
+            <h5 class="text-center">Personenliste</h5>
+            <p class="text-muted small text-center">Durchsuchbare Tabelle aller Personen mit Filtern</p>
+        </a>
+    </div>
+    <div class="col-md-4">
+        <a href="{% url 'karte' %}" class="card p-4 text-decoration-none text-dark h-100">
+            <div class="text-center mb-2 fs-1 text-success"><i class="bi bi-map"></i></div>
+            <h5 class="text-center">Herkunftskarte</h5>
+            <p class="text-muted small text-center">Geburts- und Sterbeorte auf OpenStreetMap</p>
+        </a>
+    </div>
+</div>
+
+{% if personen_count == 0 %}
+<div class="card mt-4 border-warning">
+    <div class="card-body">
+        <h5 class="card-title"><i class="bi bi-exclamation-triangle text-warning me-2"></i>Noch keine Daten importiert</h5>
+        <p class="card-text">Lade deine ELKE-Dateien hoch, um mit dem Stammbaum zu beginnen.</p>
+        {% if user.is_authenticated %}
+        <a href="{% url 'import' %}" class="btn btn-primary"><i class="bi bi-upload me-2"></i>ELKE-Dateien hochladen</a>
+        {% else %}
+        <a href="{% url 'login' %}" class="btn btn-outline-primary"><i class="bi bi-box-arrow-in-right me-2"></i>Anmelden zum Importieren</a>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+{% endblock %}

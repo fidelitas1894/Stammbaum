@@ -1,0 +1,178 @@
+{% extends "stammbaum/base.html" %}
+{% block title %}Stammbaum{% endblock %}
+{% block extra_css %}
+<style>
+#stammbaum-container { width: 100%; height: 75vh; background: #fff; border-radius: 8px; overflow: hidden; position: relative; }
+.node circle { fill: #fff; stroke-width: 2px; cursor: pointer; }
+.node.M circle { stroke: #4a90c4; }
+.node.F circle { stroke: #c4607a; }
+.node.U circle { stroke: #888; }
+.node text { font-size: 12px; font-family: sans-serif; pointer-events: none; }
+.node .name { font-weight: 600; }
+.node .dates { fill: #888; font-size: 11px; }
+.link { fill: none; stroke: #ccc; stroke-width: 1.5px; }
+.node circle:hover { fill: #f5e6c8; }
+#tooltip { position: absolute; background: #fff; border: 1px solid #ccc; border-radius: 6px;
+           padding: 8px 12px; font-size: 13px; pointer-events: none; display: none; z-index: 10;
+           box-shadow: 0 2px 8px rgba(0,0,0,.15); }
+</style>
+{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+    <h1 class="mb-0"><i class="bi bi-diagram-3 me-2"></i>Stammbaum</h1>
+    <div class="d-flex gap-2 flex-wrap">
+        <select id="personSelect" class="form-select form-select-sm" style="min-width:220px">
+            {% for p in personen %}
+            <option value="{{ p.pk }}" {% if start_person and p.pk == start_person.pk %}selected{% endif %}>
+                {{ p.vollname }} {% if p.lebensdaten %}({{ p.lebensdaten }}){% endif %}
+            </option>
+            {% endfor %}
+        </select>
+        <select id="modusSelect" class="form-select form-select-sm" style="width:160px">
+            <option value="nachkommen">Nachkommen</option>
+            <option value="vorfahren">Vorfahren</option>
+        </select>
+        <select id="tiefeSelect" class="form-select form-select-sm" style="width:130px">
+            <option value="3">3 Generationen</option>
+            <option value="5" selected>5 Generationen</option>
+            <option value="8">8 Generationen</option>
+            <option value="99">Alle</option>
+        </select>
+        <button id="btnLaden" class="btn btn-primary btn-sm"><i class="bi bi-arrow-clockwise me-1"></i>Laden</button>
+        <button id="btnReset" class="btn btn-outline-secondary btn-sm"><i class="bi bi-fullscreen me-1"></i>Zentrieren</button>
+    </div>
+</div>
+
+<div class="card p-0" style="overflow:hidden">
+    <div id="stammbaum-container">
+        <div id="tooltip"></div>
+        <svg id="svg-tree" width="100%" height="100%"></svg>
+    </div>
+</div>
+<div class="text-muted small mt-2">
+    <i class="bi bi-info-circle me-1"></i>
+    Maus-Rad zum Zoomen &middot; Ziehen zum Schwenken &middot; Klick auf Knoten für Details
+</div>
+{% endblock %}
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<script>
+const startPersonId = {{ start_person.pk|default:'null' }};
+let svg, g, zoom;
+
+function init() {
+    const container = document.getElementById('stammbaum-container');
+    svg = d3.select('#svg-tree');
+    zoom = d3.zoom().scaleExtent([0.1, 3]).on('zoom', e => g.attr('transform', e.transform));
+    svg.call(zoom);
+    g = svg.append('g');
+    if (startPersonId) loadTree(startPersonId);
+}
+
+function loadTree(personId) {
+    const modus = document.getElementById('modusSelect').value;
+    const tiefe = document.getElementById('tiefeSelect').value;
+    fetch(`/api/stammbaum/${personId}/?modus=${modus}&tiefe=${tiefe}`)
+        .then(r => r.json())
+        .then(data => {
+            if (!data || !data.id) {
+                g.selectAll('*').remove();
+                g.append('text').attr('x', 20).attr('y', 40).text('Keine Daten vorhanden.');
+                return;
+            }
+            renderTree(data);
+        })
+        .catch(e => console.error(e));
+}
+
+function renderTree(data) {
+    g.selectAll('*').remove();
+    const container = document.getElementById('stammbaum-container');
+    const W = container.clientWidth;
+    const H = container.clientHeight;
+
+    const root = d3.hierarchy(data);
+    const nodeSize = [60, 220];
+    const tree = d3.tree().nodeSize(nodeSize);
+    tree(root);
+
+    // Links
+    g.selectAll('.link')
+        .data(root.links())
+        .enter().append('path')
+        .attr('class', 'link')
+        .attr('d', d3.linkHorizontal().x(d => d.y).y(d => d.x));
+
+    // Nodes
+    const node = g.selectAll('.node')
+        .data(root.descendants())
+        .enter().append('g')
+        .attr('class', d => `node ${d.data.geschlecht || 'U'}`)
+        .attr('transform', d => `translate(${d.y},${d.x})`)
+        .style('cursor', 'pointer')
+        .on('click', (e, d) => { window.location.href = d.data.url; })
+        .on('mouseover', (e, d) => {
+            const tt = document.getElementById('tooltip');
+            tt.innerHTML = `<strong>${d.data.name}</strong>${d.data.lebensdaten ? '<br><span class="text-muted">' + d.data.lebensdaten + '</span>' : ''}`;
+            tt.style.display = 'block';
+            tt.style.left = (e.offsetX + 12) + 'px';
+            tt.style.top = (e.offsetY - 10) + 'px';
+        })
+        .on('mousemove', e => {
+            const tt = document.getElementById('tooltip');
+            tt.style.left = (e.offsetX + 12) + 'px';
+            tt.style.top = (e.offsetY - 10) + 'px';
+        })
+        .on('mouseout', () => { document.getElementById('tooltip').style.display = 'none'; });
+
+    node.append('circle').attr('r', 20);
+
+    node.append('text')
+        .attr('class', 'name')
+        .attr('x', 26)
+        .attr('dy', '-0.2em')
+        .text(d => {
+            const n = d.data.name || '';
+            return n.length > 22 ? n.substr(0, 20) + '…' : n;
+        });
+
+    node.append('text')
+        .attr('class', 'dates')
+        .attr('x', 26)
+        .attr('dy', '1em')
+        .text(d => d.data.lebensdaten || '');
+
+    // Geschlechts-Icon
+    node.append('text')
+        .attr('text-anchor', 'middle')
+        .attr('dy', '0.35em')
+        .attr('font-size', '14px')
+        .text(d => d.data.geschlecht === 'M' ? '♂' : d.data.geschlecht === 'F' ? '♀' : '?')
+        .style('fill', d => d.data.geschlecht === 'M' ? '#4a90c4' : d.data.geschlecht === 'F' ? '#c4607a' : '#888');
+
+    // Zentrieren
+    const bounds = g.node().getBBox();
+    const scale = Math.min(0.9, W / (bounds.width + 80), H / (bounds.height + 80));
+    const tx = (W - bounds.width * scale) / 2 - bounds.x * scale;
+    const ty = (H - bounds.height * scale) / 2 - bounds.y * scale;
+    svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+}
+
+document.getElementById('btnLaden').addEventListener('click', () => {
+    const id = document.getElementById('personSelect').value;
+    if (id) loadTree(id);
+});
+
+document.getElementById('btnReset').addEventListener('click', () => {
+    const container = document.getElementById('stammbaum-container');
+    const bounds = g.node().getBBox();
+    const W = container.clientWidth, H = container.clientHeight;
+    const scale = Math.min(0.9, W / (bounds.width + 80), H / (bounds.height + 80));
+    const tx = (W - bounds.width * scale) / 2 - bounds.x * scale;
+    const ty = (H - bounds.height * scale) / 2 - bounds.y * scale;
+    svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+});
+
+init();
+</script>
+{% endblock %}

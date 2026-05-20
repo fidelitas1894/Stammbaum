@@ -1,0 +1,141 @@
+{% extends "stammbaum/base.html" %}
+{% block title %}{{ titel }}{% endblock %}
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="/">Start</a></li>
+        <li class="breadcrumb-item"><a href="{% url 'personen_liste' %}">Personen</a></li>
+        {% if person %}<li class="breadcrumb-item"><a href="{{ person.get_absolute_url }}">{{ person.vollname }}</a></li>{% endif %}
+        <li class="breadcrumb-item active">{{ titel }}</li>
+    </ol>
+</nav>
+
+<h1 class="mb-4"><i class="bi bi-pencil-square me-2"></i>{{ titel }}</h1>
+
+<form method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+    <div class="row g-4">
+        <!-- Name & Basisdaten -->
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header"><strong>Name</strong></div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label class="form-label">Nachname *</label>
+                        {{ form.nachname }}
+                        {% if form.nachname.errors %}<div class="text-danger small">{{ form.nachname.errors }}</div>{% endif %}
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Vornamen</label>
+                        {{ form.vornamen }}
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Rufname</label>
+                        {{ form.rufname }}
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Titel</label>
+                        {{ form.titel }}
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Geschlecht</label>
+                        {{ form.geschlecht }}
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Geburt & Tod -->
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header"><strong>Lebensdaten</strong></div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label class="form-label">Geburtsdatum</label>
+                        <input type="date" name="geburtsdatum" class="form-control"
+                               value="{% if form.geburtsdatum.value %}{{ form.geburtsdatum.value|date:'Y-m-d' }}{% endif %}">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Geburtsort</label>
+                        {{ form.geburtsort }}
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Sterbedatum</label>
+                        <input type="date" name="sterbedatum" class="form-control"
+                               value="{% if form.sterbedatum.value %}{{ form.sterbedatum.value|date:'Y-m-d' }}{% endif %}">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Sterbeort</label>
+                        {{ form.sterbeort }}
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sonstiges -->
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header"><strong>Sonstiges</strong></div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label class="form-label">Konfession</label>
+                        {{ form.konfession }}
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Beruf</label>
+                        {{ form.beruf }}
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Todesursache</label>
+                        {{ form.todesursache }}
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Anmerkungen</label>
+                        {{ form.anmerkungen }}
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Eltern & Foto -->
+        <div class="col-md-6">
+            <div class="card mb-3">
+                <div class="card-header"><strong>Eltern</strong></div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label class="form-label">Vater</label>
+                        {{ eltern_form.vater }}
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Mutter</label>
+                        {{ eltern_form.mutter }}
+                    </div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-header"><strong>Foto</strong></div>
+                <div class="card-body">
+                    {% if person and person.foto %}
+                    <img src="{{ person.foto.url }}" class="img-thumbnail mb-2" style="max-height:120px">
+                    {% endif %}
+                    <div class="mb-3">
+                        <label class="form-label">Foto hochladen</label>
+                        {{ form.foto }}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="mt-4">
+        <button type="submit" class="btn btn-primary me-2">
+            <i class="bi bi-check-circle me-1"></i>Speichern
+        </button>
+        {% if person %}
+        <a href="{{ person.get_absolute_url }}" class="btn btn-outline-secondary">Abbrechen</a>
+        {% else %}
+        <a href="{% url 'personen_liste' %}" class="btn btn-outline-secondary">Abbrechen</a>
+        {% endif %}
+    </div>
+</form>
+{% endblock %}

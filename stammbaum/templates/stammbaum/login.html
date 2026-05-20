@@ -1,0 +1,34 @@
+{% extends "stammbaum/base.html" %}
+{% block title %}Anmelden{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-4">
+        <div class="card mt-4">
+            <div class="card-header text-center"><strong><i class="bi bi-person-lock me-2"></i>Anmelden</strong></div>
+            <div class="card-body">
+                <form method="post">
+                    {% csrf_token %}
+                    {% if form.non_field_errors %}
+                    <div class="alert alert-danger">{{ form.non_field_errors }}</div>
+                    {% endif %}
+                    <div class="mb-3">
+                        <label class="form-label">Benutzername</label>
+                        <input type="text" name="username" class="form-control" autofocus required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Passwort</label>
+                        <input type="password" name="password" class="form-control" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary w-100">
+                        <i class="bi bi-box-arrow-in-right me-1"></i>Anmelden
+                    </button>
+                </form>
+            </div>
+        </div>
+        <p class="text-center text-muted small mt-3">
+            Nur Lesen ist ohne Login möglich.<br>
+            Für Zugang bitte Administrator kontaktieren.
+        </p>
+    </div>
+</div>
+{% endblock %}

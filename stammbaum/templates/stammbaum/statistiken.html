@@ -1,0 +1,74 @@
+{% extends "stammbaum/base.html" %}
+{% block title %}Statistiken{% endblock %}
+{% block extra_css %}
+<style>.chart-container { position: relative; height: 280px; }</style>
+{% endblock %}
+{% block content %}
+<h1 class="mb-4"><i class="bi bi-bar-chart me-2"></i>Statistiken
+    <span class="badge bg-secondary fs-6">{{ personen_count }} Personen</span>
+</h1>
+
+<div class="row g-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header"><strong>Häufigste Nachnamen</strong></div>
+            <div class="card-body"><div class="chart-container"><canvas id="chartNachnamen"></canvas></div></div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header"><strong>Häufigste Vornamen</strong></div>
+            <div class="card-body"><div class="chart-container"><canvas id="chartVornamen"></canvas></div></div>
+        </div>
+    </div>
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header"><strong>Geburten &amp; Sterbefälle pro Jahrzehnt</strong></div>
+            <div class="card-body"><div class="chart-container" style="height:220px"><canvas id="chartJahrzehnte"></canvas></div></div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+const nachnamen = {{ top_nachnamen|safe }};
+const vornamen = {{ top_vornamen|safe }};
+const jahrzehnte = {{ jahrzehnte|safe }};
+const geb = {{ jahrzehnte_geburt|safe }};
+const tod = {{ jahrzehnte_tod|safe }};
+
+Chart.defaults.font.family = 'system-ui, sans-serif';
+const palette = ['#6b4c3b','#8b6558','#a87f73','#c4a090','#dfc0b0','#4a90c4','#5ba3d9','#6cb5ee','#3d7ab0','#2a618e'];
+
+new Chart(document.getElementById('chartNachnamen'), {
+    type: 'bar',
+    data: {
+        labels: nachnamen.map(n => n.nachname),
+        datasets: [{ data: nachnamen.map(n => n.anzahl), backgroundColor: palette, borderRadius: 4 }]
+    },
+    options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } }
+});
+
+new Chart(document.getElementById('chartVornamen'), {
+    type: 'bar',
+    data: {
+        labels: vornamen.map(v => v[0]),
+        datasets: [{ data: vornamen.map(v => v[1]), backgroundColor: palette.slice(5), borderRadius: 4 }]
+    },
+    options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } }
+});
+
+new Chart(document.getElementById('chartJahrzehnte'), {
+    type: 'line',
+    data: {
+        labels: jahrzehnte.map(j => j + 'er'),
+        datasets: [
+            { label: 'Geburten', data: geb, borderColor: '#4a90c4', backgroundColor: 'rgba(74,144,196,.1)', fill: true, tension: 0.3 },
+            { label: 'Sterbefälle', data: tod, borderColor: '#c4607a', backgroundColor: 'rgba(196,96,122,.1)', fill: true, tension: 0.3 }
+        ]
+    },
+    options: { scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } }
+});
+</script>
+{% endblock %}
