@@ -174,10 +174,9 @@
             });
         }
         
-        // Setze Generationen für alle Knoten
-        nodes.forEach(n => {
-            if (!generation.has(n.id)) generation.set(n.id, 0);
-            n.generation = generation.get(n.id);
+        // Setze Generationen auf die nodeMap-Einträge (nicht die Originalobjekte)
+        nodeMap.forEach((node, id) => {
+            node.generation = generation.get(id) ?? 0;
         });
         
         return { roots, nodeMap, marriedTo, maxGen: Math.max(...generation.values()) };
