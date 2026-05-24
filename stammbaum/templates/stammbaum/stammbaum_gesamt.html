@@ -51,6 +51,11 @@
         <div class="text-muted small mt-1">Alle Personen · ältere Generationen oben</div>
     </div>
     <div class="d-flex gap-2 flex-wrap align-items-center">
+        <!-- NEUE BUTTONS FÜR VERTIKAL/RADIAL -->
+        <div class="btn-group btn-group-sm me-2">
+            <button id="btnVertikal" class="btn btn-primary active">Vertikal</button>
+            <button id="btnRadial" class="btn btn-outline-secondary">Radial</button>
+        </div>
         <div class="form-check form-switch mb-0">
             <input class="form-check-input" type="checkbox" id="toggleNamen" checked>
             <label class="form-check-label small" for="toggleNamen">Namen</label>
@@ -86,507 +91,488 @@
 {% block extra_js %}
 <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
 <script>
-// ─── Layout constants ───────────────────────────────────────────────────────
-const NW = 160, NH = 52, NR = 9;   // node width / height / corner-radius
-const HGAP = 26;   // gap between separate node units
-const CGAP = 16;   // gap between the two cards of a couple
-const GEN_H = 135; // vertical distance between generation rows
-
-const wrap = document.getElementById('graph-wrap');
-const W = wrap.clientWidth, H = wrap.clientHeight;
-
-const svg = d3.select('#svg-graph');
-
-// ─── SVG defs ───────────────────────────────────────────────────────────────
-const defs = svg.append('defs');
-
-function addGrad(id, c1, c2) {
-    const g = defs.append('linearGradient').attr('id', id)
-        .attr('x1','0%').attr('y1','0%').attr('x2','0%').attr('y2','100%');
-    g.append('stop').attr('offset','0%').attr('stop-color', c1);
-    g.append('stop').attr('offset','100%').attr('stop-color', c2);
-}
-addGrad('grad-m','#eff6ff','#dbeafe');
-addGrad('grad-f','#fdf2f8','#fce7f3');
-addGrad('grad-u','#f8fafc','#f1f5f9');
-
-const flt = defs.append('filter').attr('id','shadow')
-    .attr('x','-20%').attr('y','-20%').attr('width','140%').attr('height','160%');
-flt.append('feDropShadow').attr('dx',0).attr('dy',1).attr('stdDeviation',2)
-    .attr('flood-color','rgba(0,0,0,.10)');
-
-// ─── Zoom / pan ─────────────────────────────────────────────────────────────
-const zoom = d3.zoom().scaleExtent([0.04, 4])
-    .on('zoom', e => root.attr('transform', e.transform));
-svg.call(zoom);
-const root = svg.append('g');
-
-let labelGroup = null, showNamen = true;
-
-// ─── Helper ─────────────────────────────────────────────────────────────────
-const nodeColor = g => g === 'M' ? '#3b82f6' : g === 'F' ? '#ec4899' : '#94a3b8';
-const nodeFill  = g => `url(#grad-${g === 'M' ? 'm' : g === 'F' ? 'f' : 'u'})`;
-
-// ─── Fetch & layout ─────────────────────────────────────────────────────────
-fetch('/api/stammbaum/gesamt/')
-    .then(r => r.json())
-    .then(({ nodes, links }) => {
-        document.getElementById('loading').style.display = 'none';
-        if (!nodes.length) {
-            document.getElementById('stats-badge').textContent = 'Keine Personen vorhanden';
-            return;
-        }
-
-        const byId    = new Map(nodes.map(n => [n.id, n]));
-        const kidsOf  = new Map(nodes.map(n => [n.id, []]));
-        const parsOf  = new Map(nodes.map(n => [n.id, []]));
-        links.forEach(l => {
-            kidsOf.get(l.source)?.push(l.target);
-            parsOf.get(l.target)?.push(l.source);
+(function() {
+    // ─── Konfiguration ──────────────────────────────────────────────────────
+    let currentMode = 'vertical'; // 'vertical' oder 'radial'
+    let treeData = null;
+    let svg, containerGroup, zoom;
+    let width, height;
+    
+    const wrap = document.getElementById('graph-wrap');
+    const svgElement = d3.select('#svg-graph');
+    const loadingDiv = document.getElementById('loading');
+    const statsBadge = document.getElementById('stats-badge');
+    const tooltip = document.getElementById('tooltip');
+    
+    // Layout Konstanten
+    const NODE_W = 150, NODE_H = 50, CORNER_R = 8;
+    const VERTICAL_GAP = 120;  // Vertikaler Abstand zwischen Generationen
+    const HORIZONTAL_GAP = 30;  // Horizontaler Abstand zwischen Geschwistern
+    const RADIAL_RADIUS = 350;   // Radius für radiales Layout
+    
+    // ─── Hilfsfunktionen ────────────────────────────────────────────────────
+    function getNodeColor(gender) {
+        if (gender === 'M') return '#3b82f6';
+        if (gender === 'F') return '#ec4899';
+        return '#94a3b8';
+    }
+    
+    function getNodeFill(gender) {
+        if (gender === 'M') return 'url(#grad-m)';
+        if (gender === 'F') return 'url(#grad-f)';
+        return 'url(#grad-u)';
+    }
+    
+    function escapeHtml(text) {
+        if (!text) return '';
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+    
+    // ─── Datenvorbereitung ──────────────────────────────────────────────────
+    function prepareHierarchy(nodes, links, marriages) {
+        const nodeMap = new Map(nodes.map(n => [n.id, { ...n, children: [], parents: [] }]));
+        
+        // Eltern-Kind-Beziehungen aufbauen
+        links.forEach(link => {
+            const parent = nodeMap.get(link.source);
+            const child = nodeMap.get(link.target);
+            if (parent && child) {
+                child.parents.push(parent);
+                parent.children.push(child);
+            }
         });
-
-        // ── 1. Generation = max-depth from roots ─────────────────────────────
-        const gen = new Map();
-        const roots = nodes.filter(n => parsOf.get(n.id).length === 0);
-        roots.forEach(n => gen.set(n.id, 0));
-        const bq = [...roots.map(n => n.id)];
-        while (bq.length) {
-            const id = bq.shift(), g0 = gen.get(id);
-            kidsOf.get(id).forEach(cid => {
-                if (!gen.has(cid) || gen.get(cid) < g0 + 1) {
-                    gen.set(cid, g0 + 1);
-                    bq.push(cid);
+        
+        // Ehen verarbeiten
+        const marriedTo = new Map();
+        marriages.forEach(marriage => {
+            marriedTo.set(marriage.a, marriage.b);
+            marriedTo.set(marriage.b, marriage.a);
+        });
+        
+        // Wurzeln finden (Personen ohne Eltern)
+        const roots = nodes.filter(n => nodeMap.get(n.id).parents.length === 0);
+        
+        // Generationen berechnen (BFS)
+        const generation = new Map();
+        const queue = [...roots.map(r => r.id)];
+        roots.forEach(r => generation.set(r.id, 0));
+        
+        while (queue.length > 0) {
+            const id = queue.shift();
+            const currentGen = generation.get(id);
+            const node = nodeMap.get(id);
+            
+            node.children.forEach(child => {
+                const childGen = generation.get(child.id);
+                const newGen = currentGen + 1;
+                if (childGen === undefined || childGen < newGen) {
+                    generation.set(child.id, newGen);
+                    queue.push(child.id);
                 }
             });
         }
-        nodes.forEach(n => { if (!gen.has(n.id)) gen.set(n.id, 0); });
-
-        // ── 2. Couple equalization: push shallower partner into the same row ─
-        // Partners who share children must land in the same visual row so they
-        // appear side-by-side. Then propagate to keep every child below parents.
+        
+        // Setze Generationen für alle Knoten
         nodes.forEach(n => {
-            const ps = parsOf.get(n.id);
-            if (ps.length < 2) return;
-            for (let i = 0; i < ps.length; i++)
-                for (let j = i + 1; j < ps.length; j++) {
-                    if (!byId.has(ps[i]) || !byId.has(ps[j])) continue;
-                    const mx = Math.max(gen.get(ps[i]), gen.get(ps[j]));
-                    gen.set(ps[i], mx); gen.set(ps[j], mx);
-                }
+            if (!generation.has(n.id)) generation.set(n.id, 0);
+            n.generation = generation.get(n.id);
         });
-        let eqCh = true;
-        while (eqCh) {
-            eqCh = false;
-            links.forEach(l => {
-                const pg = gen.get(l.source), cg = gen.get(l.target);
-                if (pg != null && cg != null && cg < pg + 1) { gen.set(l.target, pg + 1); eqCh = true; }
+        
+        return { roots, nodeMap, marriedTo, maxGen: Math.max(...generation.values()) };
+    }
+    
+    // ─── Vertikales Layout ──────────────────────────────────────────────────
+    function layoutVertical(roots, nodeMap, marriedTo) {
+        // Gruppiere nach Generation
+        const maxGen = Math.max(...Array.from(nodeMap.values()).map(n => n.generation));
+        const gensByLevel = Array.from({ length: maxGen + 1 }, () => []);
+        
+        nodeMap.forEach(node => {
+            gensByLevel[node.generation].push(node);
+        });
+        
+        // Positioniere jede Generation (Bottom-up für ideale X-Positionen)
+        for (let gen = maxGen; gen >= 0; gen--) {
+            const currentGens = gensByLevel[gen];
+            
+            currentGens.forEach(node => {
+                if (node.children.length > 0) {
+                    // Ideale X-Position = Durchschnitt der Kinder
+                    const childrenAvgX = node.children.reduce((sum, c) => sum + (c.x || 0), 0) / node.children.length;
+                    node._idealX = childrenAvgX;
+                } else {
+                    node._idealX = null;
+                }
+            });
+            
+            // Sortiere und positioniere
+            currentGens.sort((a, b) => (a._idealX || 0) - (b._idealX || 0));
+            
+            let currentX = 0;
+            currentGens.forEach(node => {
+                let x = currentX;
+                if (node._idealX !== null && Math.abs(node._idealX - currentX) > HORIZONTAL_GAP) {
+                    x = Math.max(currentX, node._idealX - NODE_W / 2);
+                }
+                node.x = x + NODE_W / 2;
+                node.y = node.generation * VERTICAL_GAP;
+                currentX = x + NODE_W + HORIZONTAL_GAP;
             });
         }
-
-        const maxG = Math.max(...gen.values());
-        const gens  = Array.from({length: maxG + 1}, () => []);
-        nodes.forEach(n => gens[gen.get(n.id)].push(n));
-
-        // ── 2. Top-down rank pass ─────────────────────────────────────────────
-        // Assigns ordering index; siblings with no children still sort correctly.
-        const rank = new Map();
-        gens[0].sort((a, b) => a.name.localeCompare(b.name));
-        gens[0].forEach((n, i) => rank.set(n.id, i));
-
-        for (let g0 = 1; g0 <= maxG; g0++) {
-            gens[g0].sort((a, b) => {
-                const pRank = id => rank.get(id) ?? 0;
-                // For a node with no known parents in earlier generations, look for a
-                // co-parent (same gen, shares a child in a deeper gen) that does have
-                // known parents. Inherit that co-parent's pAvg + 0.5 so the root node
-                // sorts right after its partner instead of being pushed to the far end.
-                const pAvgOf = n => {
-                    const ps = parsOf.get(n.id).filter(p => (gen.get(p) ?? 0) < g0);
-                    if (ps.length) return ps.reduce((s, p) => s + pRank(p), 0) / ps.length;
-                    for (const cid of kidsOf.get(n.id)) {
-                        if ((gen.get(cid) ?? 0) <= g0) continue;
-                        for (const pid of parsOf.get(cid)) {
-                            if (pid === n.id || (gen.get(pid) ?? -1) !== g0) continue;
-                            const coPs = parsOf.get(pid).filter(p => (gen.get(p) ?? 0) < g0);
-                            if (coPs.length)
-                                return coPs.reduce((s, p) => s + pRank(p), 0) / coPs.length + 0.5;
-                        }
+        
+        // Zweiter Durchlauf: Gleiche Ehepartner auf gleiche X-Position
+        for (let gen = 0; gen <= maxGen; gen++) {
+            gensByLevel[gen].forEach(node => {
+                const spouseId = marriedTo.get(node.id);
+                if (spouseId) {
+                    const spouse = nodeMap.get(spouseId);
+                    if (spouse && spouse.generation === node.generation && spouse.x !== node.x) {
+                        const avgX = (node.x + spouse.x) / 2;
+                        node.x = avgX;
+                        spouse.x = avgX;
                     }
-                    return 1e9;
-                };
-                const aAvg = pAvgOf(a), bAvg = pAvgOf(b);
-                return aAvg !== bAvg ? aAvg - bAvg : a.name.localeCompare(b.name);
+                }
             });
-            gens[g0].forEach((n, i) => rank.set(n.id, i));
         }
-
-        // ── 3. Bottom-up x layout ─────────────────────────────────────────────
-        // idealX = average x of direct children (already placed in deeper rows).
-        // Couples sharing children in the same natural generation are grouped.
-        const coupleData = [];
-        const coupleLinks = []; // {a, b, g0} — rebuilt after correction pass
-
-        for (let g0 = maxG; g0 >= 0; g0--) {
-            const grpNodes = gens[g0];
-
-            grpNodes.forEach(n => {
-                const xs = kidsOf.get(n.id)
-                    .filter(cid => (gen.get(cid) ?? 0) > g0)
-                    .map(cid => byId.get(cid)).filter(Boolean)
-                    .map(c => c.x).filter(x => x !== undefined);
-                n._ix = xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
-            });
-
-            // Couple detection: same generation row + shared child in deeper row
-            const partnerOf = new Map();
-            grpNodes.forEach(n => {
-                if (partnerOf.has(n.id)) return;
-                for (const cid of kidsOf.get(n.id)) {
-                    if ((gen.get(cid) ?? 0) <= g0) continue;
-                    for (const pid of parsOf.get(cid)) {
-                        if (pid !== n.id && (gen.get(pid) ?? -1) === g0 &&
-                            !partnerOf.has(pid) && byId.has(pid)) {
-                            partnerOf.set(n.id, pid);
-                            partnerOf.set(pid, n.id);
-                            break;
-                        }
-                    }
-                    if (partnerOf.has(n.id)) break;
-                }
-            });
-
-            const units = [];
-            const done  = new Set();
-
-            const sorted = [...grpNodes].sort((a, b) => {
-                if (a._ix !== null && b._ix !== null) return a._ix - b._ix;
-                if (a._ix !== null) return -1;
-                if (b._ix !== null) return  1;
-                return (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0);
-            });
-
-            for (const n of sorted) {
-                if (done.has(n.id)) continue;
-                done.add(n.id);
-                const pid = partnerOf.get(n.id);
-                if (pid && !done.has(pid)) {
-                    done.add(pid);
-                    const partner = byId.get(pid);
-                    const [L, R] = (n.geschlecht === 'F' && partner.geschlecht === 'M')
-                        ? [partner, n] : [n, partner];
-                    const ixs = [L._ix, R._ix].filter(x => x != null);
-                    const ix  = ixs.length
-                        ? ixs.reduce((a, b) => a + b) / ixs.length
-                        : ((rank.get(L.id) ?? 0) + (rank.get(R.id) ?? 0)) / 2 * (NW + HGAP);
-                    units.push({ nodes:[L, R], ix, w:NW*2+CGAP, couple:true });
-                } else {
-                    const ix = n._ix !== null ? n._ix : (rank.get(n.id) ?? 0) * (NW + HGAP);
-                    units.push({ nodes:[n], ix, w:NW, couple:false });
-                }
-            }
-
-            // Phase 1: anchored units (have children in deeper rows) — simple
-            // forward pass only. Width is unconstrained; no backward compression.
-            const anchoredU = units.filter(u => u.nodes.some(n => n._ix !== null));
-            const leafU     = units.filter(u => u.nodes.every(n => n._ix === null));
-
-            anchoredU.sort((a, b) => a.ix - b.ix);
-            anchoredU.forEach(u => { u._c = u.ix; });
-            for (let i = 1; i < anchoredU.length; i++) {
-                const need = anchoredU[i-1]._c + (anchoredU[i-1].w + anchoredU[i].w)/2 + HGAP;
-                if (anchoredU[i]._c < need) anchoredU[i]._c = need;
-            }
-
-            // Phase 2: leaf units inserted into best gap nearest their ideal.
-            leafU.sort((a, b) => a.ix - b.ix);
-            const placed = anchoredU.slice().sort((a, b) => a._c - b._c);
-            for (const leaf of leafU) {
-                const ideal = leaf.ix;
-                const minD  = u => (u.w + leaf.w)/2 + HGAP;
-                const ok    = pos => placed.every(u => Math.abs(pos - u._c) >= minD(u) - 0.1);
-                const cands = [ideal, ...placed.flatMap(u => [u._c - minD(u), u._c + minD(u)])];
-                let best = cands
-                    .filter(ok)
-                    .reduce((b, pos) => b===null || Math.abs(pos-ideal)<Math.abs(b-ideal) ? pos : b, null);
-                if (best === null)
-                    best = placed.length ? placed[placed.length-1]._c + minD(placed[placed.length-1]) : ideal;
-                leaf._c = best;
-                const idx = placed.findIndex(u => u._c > best);
-                idx === -1 ? placed.push(leaf) : placed.splice(idx, 0, leaf);
-            }
-
-            units.forEach(u => {
-                if (u.couple) {
-                    u.nodes[0].x = u._c - (CGAP + NW) / 2;
-                    u.nodes[1].x = u._c + (CGAP + NW) / 2;
-                    coupleLinks.push({ a: u.nodes[0], b: u.nodes[1], g0 });
-                } else {
-                    u.nodes[0].x = u._c;
-                }
-            });
-
-            grpNodes.forEach(n => { n.y = g0 * GEN_H; });
+        
+        return { nodeMap, gensByLevel, maxGen, marriedTo };
+    }
+    
+    // ─── Radial Layout (alternativ) ─────────────────────────────────────────
+    function layoutRadial(roots, nodeMap, marriedTo) {
+        // Einfache Tiefe-zuerst Positionierung im Kreis
+        let angleStep = (2 * Math.PI) / nodeMap.size;
+        let index = 0;
+        
+        function assignAngles(node, depth) {
+            if (node.angle !== undefined) return;
+            node.angle = index * angleStep;
+            node.radius = RADIAL_RADIUS * (depth + 1) / 5;
+            node.x = Math.cos(node.angle) * node.radius;
+            node.y = Math.sin(node.angle) * node.radius;
+            index++;
+            
+            node.children.forEach(child => assignAngles(child, depth + 1));
         }
-
-        // ── Top-down correction pass (RT second-walk idea) ────────────────────
-        // After the bottom-up sweep, parents may have drifted away from their
-        // children. Walk top-down and nudge each unit (single or couple) toward
-        // the centroid of its children, as far as neighbouring units allow.
-        { const cpMap = new Map();
-          coupleLinks.forEach(cl => { cpMap.set(cl.a.id, cl.b); cpMap.set(cl.b.id, cl.a); });
-          const minSep = NW + HGAP;
-
-          for (let g0 = 0; g0 < maxG; g0++) {
-            // Build sorted unit list for this generation
-            const us = [];
-            const seen = new Set();
-            [...gens[g0]].sort((a, b) => a.x - b.x).forEach(n => {
-                if (seen.has(n.id)) return;
-                seen.add(n.id);
-                const partner = cpMap.get(n.id);
-                if (partner && !seen.has(partner.id)) {
-                    seen.add(partner.id);
-                    us.push([n, partner]);
-                } else {
-                    us.push([n]);
-                }
-            });
-
-            us.forEach((unit, i) => {
-                // Ideal x = average x of all children in deeper rows
-                const childXs = unit.flatMap(n =>
-                    kidsOf.get(n.id)
-                        .filter(cid => (gen.get(cid) ?? 0) > g0)
-                        .map(cid => byId.get(cid)?.x)
-                        .filter(x => x !== undefined)
-                );
-                if (!childXs.length) return;
-                const ideal = childXs.reduce((a, b) => a + b) / childXs.length;
-                const cur   = unit.reduce((s, n) => s + n.x, 0) / unit.length;
-                let move    = ideal - cur;
-                if (Math.abs(move) < 0.5) return;
-
-                // Clamp to available room from neighbours
-                const myLeft  = Math.min(...unit.map(n => n.x));
-                const myRight = Math.max(...unit.map(n => n.x));
-                if (move > 0 && i < us.length - 1) {
-                    const nextLeft = Math.min(...us[i+1].map(n => n.x));
-                    move = Math.min(move, Math.max(0, nextLeft - myRight - minSep));
-                } else if (move < 0 && i > 0) {
-                    const prevRight = Math.max(...us[i-1].map(n => n.x));
-                    move = Math.max(move, -Math.max(0, myLeft - prevRight - minSep));
-                }
-                if (Math.abs(move) >= 0.5) unit.forEach(n => { n.x += move; });
-            });
-          }
+        
+        roots.forEach(root => assignAngles(root, 0));
+        
+        return nodeMap;
+    }
+    
+    // ─── Zeichnen (beide Modi) ──────────────────────────────────────────────
+    function drawTree(mode, data) {
+        containerGroup.selectAll('*').remove();
+        
+        if (mode === 'vertical') {
+            drawVertical(data);
+        } else {
+            drawRadial(data);
         }
-
-        // Rebuild coupleData from final node positions after correction pass
-        coupleLinks.forEach(({ a, b, g0 }) => {
-            const [L, R] = a.x <= b.x ? [a, b] : [b, a];
-            coupleData.push({
-                x1: L.x + NW / 2,
-                x2: R.x - NW / 2,
-                y: g0 * GEN_H,
+        
+        updateStats();
+        setTimeout(fitView, 100);
+    }
+    
+    function drawVertical({ nodeMap, gensByLevel, maxGen, marriedTo }) {
+        const connectorGroup = containerGroup.append('g').attr('class', 'connectors');
+        
+        // Eltern-Kind Verbindungen
+        nodeMap.forEach(node => {
+            node.children.forEach(child => {
+                const startX = node.x;
+                const startY = node.y + NODE_H / 2;
+                const endX = child.x;
+                const endY = child.y - NODE_H / 2;
+                const midY = startY + (endY - startY) / 2;
+                
+                connectorGroup.append('polyline')
+                    .attr('class', 'link-path')
+                    .attr('points', `${startX},${startY} ${startX},${midY} ${endX},${midY} ${endX},${endY}`)
+                    .attr('fill', 'none')
+                    .attr('stroke', '#94a3b8')
+                    .attr('stroke-width', 1.5)
+                    .attr('stroke-opacity', 0.6);
             });
         });
-
-        // Couple pair set for single-trunk connector logic
-        const coupleSet = new Set(coupleLinks.map(cl =>
-            `${Math.min(cl.a.id, cl.b.id)}_${Math.max(cl.a.id, cl.b.id)}`
-        ));
-
-        // ── Float root nodes that are > 1 row above their nearest child ─────
-        // After equalization a root like "Erich → Tatjana (gen 6)" ends up in a
-        // large gen-0 row far from Tatjana. Float them to just above their child.
-        // After floating, resolve any overlap with nodes already at that y level
-        // by finding the nearest collision-free x closest to the ideal position.
-        nodes.forEach(n => {
-            if ((gen.get(n.id) ?? 0) !== 0 || parsOf.get(n.id).length > 0) return;
-            const kids = kidsOf.get(n.id).map(cid => byId.get(cid)).filter(c => c?.y != null);
-            if (!kids.length) return;
-            const nearY = Math.min(...kids.map(c => c.y));
-            if (nearY <= GEN_H) return;          // child is right below — no float needed
-            n.y = nearY - GEN_H;                 // one row above the nearest child
-            const ideal = kids.reduce((s, c) => s + c.x, 0) / kids.length;
-            n.x = ideal;
-
-            // Resolve overlap with nodes already placed at this y level
-            const minSep = NW + HGAP;
-            const row = nodes
-                .filter(o => o !== n && o.x != null && Math.abs((o.y ?? -9e9) - n.y) < 2)
-                .sort((a, b) => a.x - b.x);
-            if (!row.length) return;
-            // Candidate positions: ideal, and just left/right of each row node
-            const candidates = [ideal, ...row.flatMap(o => [o.x - minSep, o.x + minSep])];
-            const best = candidates
-                .filter(pos => row.every(o => Math.abs(pos - o.x) >= minSep - 0.5))
-                .reduce((b, pos) =>
-                    b === null || Math.abs(pos - ideal) < Math.abs(b - ideal) ? pos : b, null);
-            // Only move if the collision-free spot is close; otherwise stay at ideal
-            // (a slight visual overlap is better than being pushed to the far edge).
-            if (best !== null && Math.abs(best - ideal) <= 2 * (NW + HGAP)) n.x = best;
+        
+        // Ehepartner Verbindungen
+        nodeMap.forEach(node => {
+            const spouseId = marriedTo.get(node.id);
+            if (spouseId && node.id < spouseId) { // Nur einmal zeichnen
+                const spouse = nodeMap.get(spouseId);
+                if (spouse && node.generation === spouse.generation) {
+                    connectorGroup.append('line')
+                        .attr('class', 'couple-bar')
+                        .attr('x1', node.x + NODE_W / 2)
+                        .attr('y1', node.y)
+                        .attr('x2', spouse.x - NODE_W / 2)
+                        .attr('y2', spouse.y)
+                        .attr('stroke', '#f59e0b')
+                        .attr('stroke-width', 2.5)
+                        .attr('stroke-opacity', 0.8);
+                }
+            }
         });
-
-        // Center entire graph around x = 0
-        const allX = nodes.map(n => n.x).filter(x => x !== undefined);
-        const xOff = (Math.min(...allX) + Math.max(...allX)) / 2;
-        nodes.forEach(n => { n.x -= xOff; });
-        coupleData.forEach(c => { c.x1 -= xOff; c.x2 -= xOff; });
-
-        // ── Draw: orthogonal family connectors ───────────────────────────────
-        // Group children by their exact parent set so every family gets one
-        // shared trunk + sibling bus instead of N individual curves.
-        const famByKey = new Map();
-        nodes.forEach(c => {
-            const cg = gen.get(c.id);
-            const cPars = parsOf.get(c.id)
-                .filter(pid => byId.has(pid) && (gen.get(pid) ?? 0) < cg)
-                .sort((a, b) => a - b);
-            if (!cPars.length) return;
-            const key = cPars.join('_');
-            if (!famByKey.has(key)) famByKey.set(key, { parentIds: cPars, children: [] });
-            famByKey.get(key).children.push(c);
+        
+        // Knoten zeichnen
+        const nodeGroup = containerGroup.append('g').attr('class', 'nodes');
+        
+        nodeMap.forEach(node => {
+            const g = nodeGroup.append('g')
+                .attr('class', 'node-card')
+                .attr('transform', `translate(${node.x}, ${node.y})`)
+                .on('click', () => window.location.href = node.url)
+                .on('mouseover', (event) => {
+                    tooltip.innerHTML = `<strong>${escapeHtml(node.name)}</strong>` +
+                        (node.lebensdaten ? `<br>${escapeHtml(node.lebensdaten)}` : '');
+                    tooltip.style.display = 'block';
+                })
+                .on('mousemove', (event) => {
+                    const rect = wrap.getBoundingClientRect();
+                    let x = event.clientX - rect.left + 16;
+                    let y = event.clientY - rect.top - 12;
+                    if (x + 230 > rect.width) x -= 254;
+                    tooltip.style.left = x + 'px';
+                    tooltip.style.top = y + 'px';
+                })
+                .on('mouseout', () => tooltip.style.display = 'none');
+            
+            // Hintergrund
+            g.append('rect')
+                .attr('width', NODE_W)
+                .attr('height', NODE_H)
+                .attr('rx', CORNER_R)
+                .attr('ry', CORNER_R)
+                .attr('x', -NODE_W / 2)
+                .attr('y', -NODE_H / 2)
+                .attr('fill', getNodeFill(node.geschlecht))
+                .attr('stroke', getNodeColor(node.geschlecht))
+                .attr('stroke-width', 1.5)
+                .attr('filter', 'url(#shadow)');
+            
+            // Akzentstreifen
+            g.append('line')
+                .attr('x1', -NODE_W / 2 + 4)
+                .attr('y1', -NODE_H / 2 + CORNER_R)
+                .attr('x2', -NODE_W / 2 + 4)
+                .attr('y2', NODE_H / 2 - CORNER_R)
+                .attr('stroke', getNodeColor(node.geschlecht))
+                .attr('stroke-width', 4)
+                .attr('stroke-linecap', 'round');
+            
+            // Name
+            g.append('text')
+                .attr('class', 'node-name')
+                .attr('text-anchor', 'middle')
+                .attr('x', 0)
+                .attr('y', node.lebensdaten ? -6 : 4)
+                .style('font-size', '11px')
+                .style('font-weight', 'bold')
+                .style('fill', '#1e293b')
+                .text(node.name.length > 18 ? node.name.slice(0, 16) + '…' : node.name);
+            
+            // Lebensdaten
+            if (node.lebensdaten) {
+                g.append('text')
+                    .attr('class', 'node-dates')
+                    .attr('text-anchor', 'middle')
+                    .attr('x', 0)
+                    .attr('y', 10)
+                    .style('font-size', '9px')
+                    .style('fill', '#64748b')
+                    .text(node.lebensdaten);
+            }
         });
-
-        const connGroup = root.append('g');
-        const wire = sel => sel
-            .attr('fill', 'none').attr('stroke', '#94a3b8')
-            .attr('stroke-width', 1.5).attr('stroke-opacity', 0.55)
-            .attr('stroke-linecap', 'round');
-
-        famByKey.forEach(({ parentIds, children }) => {
-            const parents = parentIds.map(pid => byId.get(pid)).filter(Boolean);
-            if (!parents.length) return;
-
-            const forkX  = parents.reduce((s, p) => s + p.x, 0) / parents.length;
-            const parBot = Math.max(...parents.map(p => p.y + NH / 2));
-            const chiTop = Math.min(...children.map(c => c.y - NH / 2));
-            const span   = chiTop - parBot;
-            const busY   = chiTop - span * 0.22;
-
-            // For detected couples: single trunk from couple-bar midpoint straight down.
-            // For non-couple parents: elbow from each parent to forkX.
-            const isCouple = parents.length === 2 && coupleSet.has(
-                `${Math.min(parents[0].id, parents[1].id)}_${Math.max(parents[0].id, parents[1].id)}`
+    }
+    
+    function drawRadial(nodeMap) {
+        const connectorGroup = containerGroup.append('g').attr('class', 'connectors');
+        
+        nodeMap.forEach(node => {
+            node.children.forEach(child => {
+                connectorGroup.append('line')
+                    .attr('x1', node.x)
+                    .attr('y1', node.y)
+                    .attr('x2', child.x)
+                    .attr('y2', child.y)
+                    .attr('stroke', '#94a3b8')
+                    .attr('stroke-width', 1)
+                    .attr('stroke-opacity', 0.5);
+            });
+        });
+        
+        const nodeGroup = containerGroup.append('g').attr('class', 'nodes');
+        
+        nodeMap.forEach(node => {
+            const g = nodeGroup.append('g')
+                .attr('transform', `translate(${node.x}, ${node.y})`)
+                .on('click', () => window.location.href = node.url);
+            
+            g.append('circle')
+                .attr('r', 22)
+                .attr('fill', getNodeFill(node.geschlecht))
+                .attr('stroke', getNodeColor(node.geschlecht))
+                .attr('stroke-width', 2);
+            
+            g.append('text')
+                .attr('text-anchor', 'middle')
+                .attr('dy', '0.35em')
+                .style('font-size', '9px')
+                .style('fill', '#1e293b')
+                .text(node.name.charAt(0) + (node.name.charAt(1) || ''));
+        });
+    }
+    
+    // ─── Zentrieren ─────────────────────────────────────────────────────────
+    function fitView() {
+        try {
+            const bbox = containerGroup.node().getBBox();
+            if (!bbox.width || !bbox.height) return;
+            
+            const padding = 50;
+            const scale = Math.min(
+                (width - padding) / bbox.width,
+                (height - padding) / bbox.height,
+                1.2
             );
-
-            if (isCouple) {
-                // Trunk starts at the couple-bar level (center of couple cards),
-                // passes behind the lower half of the cards (hidden by nodes), then continues down.
-                const coupleY = parents.reduce((s, p) => s + p.y, 0) / parents.length;
-                wire(connGroup.append('line'))
-                    .attr('x1', forkX).attr('y1', coupleY)
-                    .attr('x2', forkX).attr('y2', busY);
-            } else {
-                const stemY = parBot + span * 0.40;
-                parents.forEach(p => {
-                    const py = p.y + NH / 2;
-                    if (Math.abs(p.x - forkX) < 2) {
-                        wire(connGroup.append('line'))
-                            .attr('x1', p.x).attr('y1', py)
-                            .attr('x2', p.x).attr('y2', stemY);
-                    } else {
-                        wire(connGroup.append('polyline'))
-                            .attr('points', `${p.x},${py} ${p.x},${stemY} ${forkX},${stemY}`);
-                    }
-                });
-                if (busY > stemY + 2) {
-                    wire(connGroup.append('line'))
-                        .attr('x1', forkX).attr('y1', stemY)
-                        .attr('x2', forkX).attr('y2', busY);
-                }
-            }
-
-            // Horizontal sibling bus
-            const xs = children.map(c => c.x);
-            wire(connGroup.append('line'))
-                .attr('x1', Math.min(forkX, ...xs)).attr('y1', busY)
-                .attr('x2', Math.max(forkX, ...xs)).attr('y2', busY);
-
-            // Vertical drop to each child
-            children.forEach(c => {
-                wire(connGroup.append('line'))
-                    .attr('x1', c.x).attr('y1', busY)
-                    .attr('x2', c.x).attr('y2', c.y - NH / 2);
-            });
+            
+            const tx = (width - bbox.width * scale) / 2 - bbox.x * scale;
+            const ty = (height - bbox.height * scale) / 2 - bbox.y * scale;
+            
+            svgElement.transition()
+                .duration(500)
+                .call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+        } catch(e) {}
+    }
+    
+    function updateStats() {
+        if (treeData) {
+            statsBadge.textContent = `${treeData.nodes.length} Personen · ${treeData.links.length} Verbindungen · ${treeData.ehen.length} Ehen · Modus: ${currentMode === 'vertical' ? 'Vertikal' : 'Radial'}`;
+        }
+    }
+    
+    // ─── Initialisierung ────────────────────────────────────────────────────
+    function init() {
+        width = wrap.clientWidth;
+        height = wrap.clientHeight;
+        svgElement.attr('width', width).attr('height', height);
+        
+        // Zoom Setup
+        zoom = d3.zoom().scaleExtent([0.1, 3]).on('zoom', (event) => {
+            containerGroup.attr('transform', event.transform);
         });
-
-        // Couple marriage bars (same-generation partners)
-        connGroup.selectAll('line.couple-bar').data(coupleData).enter().append('line')
-            .attr('class', 'couple-bar')
-            .attr('x1', d => d.x1).attr('y1', d => d.y)
-            .attr('x2', d => d.x2).attr('y2', d => d.y);
-
-        // Node groups
-        const nodeSel = root.append('g').selectAll('.node-card').data(nodes).enter()
-            .append('g').attr('class', 'node-card')
-            .attr('transform', d => `translate(${d.x},${d.y})`)
-            .on('click',     (e, d) => window.location.href = d.url)
-            .on('mouseover', (e, d) => {
-                const tt = document.getElementById('tooltip');
-                tt.innerHTML = `<strong>${d.name}</strong>`
-                    + (d.lebensdaten ? `<br><span style="opacity:.75">${d.lebensdaten}</span>` : '');
-                tt.style.display = 'block';
+        svgElement.call(zoom);
+        
+        containerGroup = svgElement.append('g');
+        
+        // Schatten und Verläufe
+        const defs = svgElement.append('defs');
+        ['m', 'f', 'u'].forEach(g => {
+            const grad = defs.append('linearGradient')
+                .attr('id', `grad-${g}`)
+                .attr('x1', '0%').attr('y1', '0%')
+                .attr('x2', '0%').attr('y2', '100%');
+            if (g === 'm') {
+                grad.append('stop').attr('offset', '0%').attr('stop-color', '#eff6ff');
+                grad.append('stop').attr('offset', '100%').attr('stop-color', '#dbeafe');
+            } else if (g === 'f') {
+                grad.append('stop').attr('offset', '0%').attr('stop-color', '#fdf2f8');
+                grad.append('stop').attr('offset', '100%').attr('stop-color', '#fce7f3');
+            } else {
+                grad.append('stop').attr('offset', '0%').attr('stop-color', '#f8fafc');
+                grad.append('stop').attr('offset', '100%').attr('stop-color', '#f1f5f9');
+            }
+        });
+        
+        const filter = defs.append('filter').attr('id', 'shadow')
+            .attr('x', '-20%').attr('y', '-20%')
+            .attr('width', '140%').attr('height', '160%');
+        filter.append('feDropShadow').attr('dx', 0).attr('dy', 2)
+            .attr('stdDeviation', 3).attr('flood-color', 'rgba(0,0,0,0.12)');
+        
+        // Daten laden
+        fetch('/api/stammbaum/gesamt/')
+            .then(r => r.json())
+            .then(data => {
+                loadingDiv.style.display = 'none';
+                treeData = data;
+                
+                const { roots, nodeMap, marriedTo, maxGen } = prepareHierarchy(data.nodes, data.links, data.ehen);
+                const layoutData = layoutVertical(roots, nodeMap, marriedTo);
+                
+                // Speichere für Moduswechsel
+                window._layoutData = layoutData;
+                window._roots = roots;
+                window._nodeMap = nodeMap;
+                window._marriedTo = marriedTo;
+                
+                drawTree('vertical', layoutData);
+                
+                // Event Listener für Moduswechsel
+                const btnVertikal = document.getElementById('btnVertikal');
+                const btnRadial = document.getElementById('btnRadial');
+                
+                if (btnVertikal) {
+                    btnVertikal.addEventListener('click', () => {
+                        currentMode = 'vertical';
+                        btnVertikal.classList.add('active');
+                        btnVertikal.classList.remove('btn-outline-secondary');
+                        btnVertikal.classList.add('btn-primary');
+                        btnRadial.classList.remove('active', 'btn-primary');
+                        btnRadial.classList.add('btn-outline-secondary');
+                        const layoutData = layoutVertical(window._roots, window._nodeMap, window._marriedTo);
+                        drawTree('vertical', layoutData);
+                    });
+                }
+                
+                if (btnRadial) {
+                    btnRadial.addEventListener('click', () => {
+                        currentMode = 'radial';
+                        btnRadial.classList.add('active');
+                        btnRadial.classList.remove('btn-outline-secondary');
+                        btnRadial.classList.add('btn-primary');
+                        btnVertikal.classList.remove('active', 'btn-primary');
+                        btnVertikal.classList.add('btn-outline-secondary');
+                        const radialData = layoutRadial(window._roots, window._nodeMap, window._marriedTo);
+                        drawTree('radial', radialData);
+                    });
+                }
             })
-            .on('mousemove', e => {
-                const tt = document.getElementById('tooltip');
-                const r = wrap.getBoundingClientRect();
-                let x = e.clientX - r.left + 16, y = e.clientY - r.top - 12;
-                if (x + 230 > r.width) x -= 254;
-                tt.style.left = x + 'px'; tt.style.top = y + 'px';
-            })
-            .on('mouseout', () => { document.getElementById('tooltip').style.display = 'none'; });
-
-        // Card background
-        nodeSel.append('rect').attr('class','node-bg')
-            .attr('width', NW).attr('height', NH).attr('rx', NR).attr('ry', NR)
-            .attr('x', -NW/2).attr('y', -NH/2)
-            .attr('filter','url(#shadow)')
-            .attr('fill',   d => nodeFill(d.geschlecht))
-            .attr('stroke', d => nodeColor(d.geschlecht))
-            .attr('stroke-width', 1.5);
-
-        // Gender accent line on left edge
-        nodeSel.append('line')
-            .attr('x1', -NW/2 + 4).attr('y1', -NH/2 + NR)
-            .attr('x2', -NW/2 + 4).attr('y2',  NH/2 - NR)
-            .attr('stroke', d => nodeColor(d.geschlecht))
-            .attr('stroke-width', 5).attr('stroke-linecap','round')
-            .style('pointer-events','none');
-
-        // Labels
-        labelGroup = nodeSel.append('g').attr('class','labels');
-        labelGroup.append('text').attr('class','node-name')
-            .attr('text-anchor','middle').attr('x', 3)
-            .attr('y', d => d.lebensdaten ? -6 : 4)
-            .text(d => d.name.length > 19 ? d.name.slice(0,17)+'…' : d.name);
-        labelGroup.append('text').attr('class','node-dates')
-            .attr('text-anchor','middle').attr('x', 3).attr('y', 10)
-            .text(d => d.lebensdaten);
-
-        fitView();
-
-        document.getElementById('stats-badge').textContent =
-            `${nodes.length} Personen · ${links.length} Verbindungen · ${maxG + 1} Generationen`;
+            .catch(err => {
+                console.error(err);
+                loadingDiv.style.display = 'none';
+                statsBadge.textContent = 'Fehler beim Laden';
+            });
+        
+        // Resize Handler
+        const resizeObserver = new ResizeObserver(() => {
+            width = wrap.clientWidth;
+            height = wrap.clientHeight;
+            svgElement.attr('width', width).attr('height', height);
+            fitView();
+        });
+        resizeObserver.observe(wrap);
+    }
+    
+    // Start
+    init();
+    
+    // Globale Funktionen
+    window.fitView = fitView;
+    window.toggleNames = function(show) {
+        d3.selectAll('.node-name, .node-dates').style('display', show ? 'block' : 'none');
+    };
+    
+    // Namen umschalten
+    document.getElementById('toggleNamen').addEventListener('change', function(e) {
+        window.toggleNames(e.target.checked);
     });
-
-function fitView() {
-    try {
-        const b = root.node().getBBox();
-        if (!b.width) return;
-        const scale = Math.min(1, (W - 80) / b.width, (H - 80) / b.height);
-        const tx = (W - b.width  * scale) / 2 - b.x * scale;
-        const ty = (H - b.height * scale) / 2 - b.y * scale;
-        svg.transition().duration(600)
-           .call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
-    } catch(e) {}
-}
-
-document.getElementById('toggleNamen').addEventListener('change', function() {
-    showNamen = this.checked;
-    if (labelGroup) labelGroup.style('display', showNamen ? null : 'none');
-});
-document.getElementById('btnZentrieren').addEventListener('click', fitView);
+    
+    // Zentrieren Button
+    document.getElementById('btnZentrieren').addEventListener('click', () => fitView());
+})();
 </script>
 {% endblock %}
