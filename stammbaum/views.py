@@ -76,20 +76,12 @@ def stammbaum_gesamt(request):
     return render(request, 'stammbaum/stammbaum_gesamt.html')
 
 
-def stammbaum_bfs(request):
-    return render(request, 'stammbaum/stammbaum_bfs.html')
-
-
 def stammbaum_genogramm(request):
     return render(request, 'stammbaum/stammbaum_genogramm.html')
 
 
 def stammbaum_fraktal(request):
     return render(request, 'stammbaum/stammbaum_fraktal.html')
-
-
-def stammbaum_force(request):
-    return render(request, 'stammbaum/stammbaum_force.html')
 
 
 def stammbaum_fraktal_json(request):
@@ -1216,17 +1208,3 @@ def verwandtschaft_api(request):
         'pfad_a': [p_info(persons_map[pk]) for pk in path_a_pks],
         'pfad_b': [p_info(persons_map[pk]) for pk in path_b_pks],
     })
-
-
-# ---------------------------------------------------------------------------
-# Sugiyama-Layout (serverseitiges DAG-Layout)
-# ---------------------------------------------------------------------------
-
-def stammbaum_sugiyama(request):
-    return render(request, 'stammbaum/stammbaum_sugiyama.html')
-
-
-def stammbaum_sugiyama_json(request):
-    from .sugiyama import compute_sugiyama_layout
-    data = compute_sugiyama_layout()
-    return JsonResponse(data)

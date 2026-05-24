@@ -1,0 +1,326 @@
+{% extends "stammbaum/base.html" %}
+{% block title %}Geo-Konflikte{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+#fix-map { height: 300px; border-radius: 8px; }
+.status-badge-problem      { background:#fef3c7; color:#92400e; border:1px solid #fbbf24; }
+.status-badge-keine_koord  { background:#fee2e2; color:#991b1b; border:1px solid #fca5a5; }
+tr.resolved { opacity: .4; pointer-events: none; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+    <div>
+        <h1 class="mb-0"><i class="bi bi-exclamation-triangle-fill text-warning me-2"></i>Geo-Konflikte</h1>
+        <div class="text-muted small mt-1">
+            Orte ohne Koordinaten oder mit manuell gemeldeten Problemen
+        </div>
+    </div>
+    <span class="badge bg-warning text-dark fs-6">{{ anzahl }} Einträge</span>
+</div>
+
+{% if not conflicts %}
+<div class="alert alert-success">
+    <i class="bi bi-check-circle-fill me-2"></i>Keine Konflikte — alle verwendeten Orte sind geocodiert.
+</div>
+{% else %}
+<div class="card">
+    <div class="table-responsive">
+        <table class="table table-hover mb-0" id="konflikt-tabelle">
+            <thead class="table-light">
+                <tr>
+                    <th>Person</th>
+                    <th>Art</th>
+                    <th>Ortsname</th>
+                    <th>Status</th>
+                    <th>Koordinaten</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for c in conflicts %}
+            <tr id="row-{{ c.ort_name|slugify }}-{{ c.person.pk }}-{{ c.art|lower|cut:' ' }}"
+                data-ort="{{ c.ort_name }}"
+                data-lat="{% if c.ort and c.ort.lat %}{{ c.ort.lat }}{% endif %}"
+                data-lon="{% if c.ort and c.ort.lon %}{{ c.ort.lon }}{% endif %}"
+                data-problem="{% if c.ort and c.ort.geo_problem %}1{% else %}0{% endif %}">
+
+                <td>
+                    <a href="{{ c.person.get_absolute_url }}">{{ c.person.vollname }}</a>
+                </td>
+                <td>
+                    <span class="badge {% if c.art == 'Geburtsort' %}bg-success{% else %}bg-danger{% endif %} bg-opacity-75">
+                        {{ c.art }}
+                    </span>
+                </td>
+                <td>{{ c.ort_name }}</td>
+                <td>
+                    {% if c.status == 'problem' %}
+                    <span class="badge status-badge-problem">
+                        <i class="bi bi-flag-fill me-1"></i>Problem gemeldet
+                    </span>
+                    {% else %}
+                    <span class="badge status-badge-keine_koord">
+                        <i class="bi bi-geo-alt me-1"></i>Keine Koordinaten
+                    </span>
+                    {% endif %}
+                </td>
+                <td class="koordinaten-cell text-muted small">
+                    {% if c.ort and c.ort.lat %}
+                        {{ c.ort.lat|floatformat:4 }}, {{ c.ort.lon|floatformat:4 }}
+                    {% else %}
+                        —
+                    {% endif %}
+                </td>
+                <td class="text-end">
+                    {% if user.is_authenticated %}
+                    <button class="btn btn-sm btn-outline-primary btn-bearbeiten me-1"
+                            data-ort="{{ c.ort_name }}"
+                            data-lat="{% if c.ort and c.ort.lat %}{{ c.ort.lat }}{% endif %}"
+                            data-lon="{% if c.ort and c.ort.lon %}{{ c.ort.lon }}{% endif %}">
+                        <i class="bi bi-pencil me-1"></i>Bearbeiten
+                    </button>
+                    <button class="btn btn-sm {% if c.ort and c.ort.geo_problem %}btn-warning{% else %}btn-outline-warning{% endif %} btn-problem-toggle"
+                            data-ort="{{ c.ort_name }}"
+                            title="{% if c.ort and c.ort.geo_problem %}Problem-Markierung aufheben{% else %}Als Problem markieren{% endif %}">
+                        <i class="bi bi-flag{% if c.ort and c.ort.geo_problem %}-fill{% endif %}"></i>
+                    </button>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+<!-- Modal: Koordinaten bearbeiten -->
+<div class="modal fade" id="fixModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="bi bi-geo-alt me-2"></i>Koordinaten bearbeiten:
+                    <span id="modal-ort-name" class="fw-bold"></span>
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="d-flex gap-2 mb-3 flex-wrap align-items-center">
+                    <button class="btn btn-outline-info btn-sm" id="btnModalGeocode">
+                        <i class="bi bi-arrow-clockwise me-1"></i>Nominatim-Suche
+                    </button>
+                    <span class="text-muted small">oder auf Karte klicken / Marker ziehen</span>
+                    <span id="modal-coord-display" class="badge bg-light text-secondary border ms-auto"></span>
+                </div>
+                <div id="fix-map"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Abbrechen</button>
+                <button type="button" class="btn btn-primary" id="btnModalSave">
+                    <i class="bi bi-check-lg me-1"></i>Speichern
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+function getCookie(name) {
+    const m = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+    return m ? m.pop() : '';
+}
+
+// ── Modal-Karte ──────────────────────────────────────────────────────────────
+let fixMap = null, fixMarker = null, fixOrtName = null, fixLat = null, fixLon = null;
+
+function makeMarkerIcon() {
+    return L.divIcon({
+        html: '<div style="width:16px;height:16px;border-radius:50%;background:#3b82f6;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5)"></div>',
+        className: '', iconSize: [16,16], iconAnchor: [8,8],
+    });
+}
+
+function updateCoordDisplay() {
+    const el = document.getElementById('modal-coord-display');
+    if (fixLat != null) {
+        el.textContent = `${fixLat.toFixed(5)}, ${fixLon.toFixed(5)}`;
+    } else {
+        el.textContent = 'Noch keine Position';
+    }
+}
+
+function openFixModal(ortName, lat, lon) {
+    fixOrtName = ortName;
+    fixLat = lat || null;
+    fixLon = lon || null;
+
+    document.getElementById('modal-ort-name').textContent = ortName;
+    updateCoordDisplay();
+
+    const modal = new bootstrap.Modal(document.getElementById('fixModal'));
+    modal.show();
+
+    document.getElementById('fixModal').addEventListener('shown.bs.modal', function handler() {
+        this.removeEventListener('shown.bs.modal', handler);
+
+        if (!fixMap) {
+            fixMap = L.map('fix-map').setView([51.0, 10.0], 5);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; OpenStreetMap'
+            }).addTo(fixMap);
+            fixMap.on('click', e => {
+                fixLat = e.latlng.lat; fixLon = e.latlng.lng;
+                updateCoordDisplay();
+                if (fixMarker) fixMarker.setLatLng([fixLat, fixLon]);
+                else {
+                    fixMarker = L.marker([fixLat, fixLon], { icon: makeMarkerIcon(), draggable: true }).addTo(fixMap);
+                    fixMarker.on('dragend', ev => {
+                        const ll = ev.target.getLatLng();
+                        fixLat = ll.lat; fixLon = ll.lng;
+                        updateCoordDisplay();
+                    });
+                }
+            });
+        } else {
+            fixMap.invalidateSize();
+        }
+
+        // Position Marker
+        if (fixMarker) { fixMap.removeLayer(fixMarker); fixMarker = null; }
+        if (fixLat != null) {
+            fixMarker = L.marker([fixLat, fixLon], { icon: makeMarkerIcon(), draggable: true }).addTo(fixMap);
+            fixMarker.on('dragend', ev => {
+                const ll = ev.target.getLatLng();
+                fixLat = ll.lat; fixLon = ll.lng;
+                updateCoordDisplay();
+            });
+            fixMap.setView([fixLat, fixLon], 10);
+        } else {
+            fixMap.setView([51.0, 10.0], 5);
+        }
+    }, { once: false });
+}
+
+// Nominatim-Suche im Modal
+document.getElementById('btnModalGeocode').addEventListener('click', async () => {
+    if (!fixOrtName) return;
+    const btn = document.getElementById('btnModalGeocode');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>';
+    try {
+        const r = await fetch(`/api/geocode/${encodeURIComponent(fixOrtName)}/?force=1`);
+        const d = await r.json();
+        if (d.lat && d.lon) {
+            fixLat = d.lat; fixLon = d.lon;
+            updateCoordDisplay();
+            if (fixMarker) fixMarker.setLatLng([fixLat, fixLon]);
+            else {
+                fixMarker = L.marker([fixLat, fixLon], { icon: makeMarkerIcon(), draggable: true }).addTo(fixMap);
+                fixMarker.on('dragend', ev => {
+                    const ll = ev.target.getLatLng();
+                    fixLat = ll.lat; fixLon = ll.lng;
+                    updateCoordDisplay();
+                });
+            }
+            fixMap.setView([fixLat, fixLon], 10);
+        } else {
+            alert('Nominatim hat keinen Treffer für: ' + fixOrtName);
+        }
+    } catch(e) { alert('Geocodierung fehlgeschlagen.'); }
+    finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Nominatim-Suche';
+    }
+});
+
+// Speichern im Modal
+document.getElementById('btnModalSave').addEventListener('click', async () => {
+    if (!fixLat || !fixOrtName) { alert('Bitte erst eine Position setzen.'); return; }
+    const btn = document.getElementById('btnModalSave');
+    btn.disabled = true;
+    try {
+        const r = await fetch(`/api/ort/${encodeURIComponent(fixOrtName)}/koordinaten/`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') },
+            body: JSON.stringify({ lat: fixLat, lon: fixLon }),
+        });
+        if (!r.ok) throw new Error();
+        // Alle Zeilen mit diesem Ort als gelöst markieren und ausblenden
+        document.querySelectorAll(`tr[data-ort="${CSS.escape(fixOrtName)}"]`).forEach(row => {
+            row.classList.add('resolved');
+            setTimeout(() => row.remove(), 600);
+        });
+        bootstrap.Modal.getInstance(document.getElementById('fixModal')).hide();
+        updateBadge();
+    } catch(e) { alert('Fehler beim Speichern.'); }
+    finally { btn.disabled = false; }
+});
+
+// Bearbeiten-Buttons
+document.querySelectorAll('.btn-bearbeiten').forEach(btn => {
+    btn.addEventListener('click', () => {
+        const ort = btn.dataset.ort;
+        const lat = btn.dataset.lat ? parseFloat(btn.dataset.lat) : null;
+        const lon = btn.dataset.lon ? parseFloat(btn.dataset.lon) : null;
+        openFixModal(ort, lat, lon);
+    });
+});
+
+// Problem-Toggle-Buttons
+document.querySelectorAll('.btn-problem-toggle').forEach(btn => {
+    btn.addEventListener('click', async () => {
+        const ort = btn.dataset.ort;
+        try {
+            const r = await fetch(`/api/ort/${encodeURIComponent(ort)}/problem/`, {
+                method: 'POST',
+                headers: { 'X-CSRFToken': getCookie('csrftoken') },
+            });
+            const d = await r.json();
+            const rows = document.querySelectorAll(`tr[data-ort="${CSS.escape(ort)}"]`);
+            if (d.geo_problem) {
+                btn.classList.replace('btn-outline-warning', 'btn-warning');
+                btn.querySelector('i').classList.add('bi-flag-fill');
+                btn.querySelector('i').classList.remove('bi-flag');
+                btn.title = 'Problem-Markierung aufheben';
+                rows.forEach(row => {
+                    row.querySelector('.status-badge-keine_koord, .status-badge-problem').outerHTML =
+                        '<span class="badge status-badge-problem"><i class="bi bi-flag-fill me-1"></i>Problem gemeldet</span>';
+                });
+            } else {
+                btn.classList.replace('btn-warning', 'btn-outline-warning');
+                btn.querySelector('i').classList.remove('bi-flag-fill');
+                btn.querySelector('i').classList.add('bi-flag');
+                btn.title = 'Als Problem markieren';
+                // Wenn Koordinaten vorhanden → Zeile entfernen
+                rows.forEach(row => {
+                    if (row.querySelector('.koordinaten-cell').textContent.trim() !== '—') {
+                        row.classList.add('resolved');
+                        setTimeout(() => row.remove(), 600);
+                    } else {
+                        row.querySelector('.status-badge-problem').outerHTML =
+                            '<span class="badge status-badge-keine_koord"><i class="bi bi-geo-alt me-1"></i>Keine Koordinaten</span>';
+                    }
+                });
+                updateBadge();
+            }
+        } catch(e) { alert('Fehler beim Umschalten.'); }
+    });
+});
+
+function updateBadge() {
+    fetch('/api/konflikte/count/')
+        .then(r => r.json())
+        .then(d => {
+            const badge = document.getElementById('nav-konflikt-badge');
+            if (badge) badge.textContent = d.count || '';
+        });
+}
+</script>
+{% endblock %}

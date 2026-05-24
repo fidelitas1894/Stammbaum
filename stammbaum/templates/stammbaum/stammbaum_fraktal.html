@@ -1,0 +1,342 @@
+{% extends "stammbaum/base.html" %}
+{% block title %}Fraktal-Stammbaum{% endblock %}
+{% block extra_css %}
+<style>
+#fraktal-wrap {
+    width: 100%; height: 82vh;
+    background: #0f172a;
+    border-radius: 12px; overflow: hidden; position: relative;
+    cursor: grab;
+}
+#fraktal-wrap:active { cursor: grabbing; }
+#tooltip {
+    position: absolute; background: rgba(15,23,42,.95); color: #f1f5f9;
+    border-radius: 8px; padding: 8px 14px; font-size: 13px; pointer-events: none;
+    display: none; z-index: 10; box-shadow: 0 4px 20px rgba(0,0,0,.5);
+    max-width: 220px; line-height: 1.5; border: 1px solid rgba(255,255,255,.1);
+}
+#overlay {
+    position: absolute; top: 12px; left: 12px; right: 12px;
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap; z-index: 5;
+}
+#stats-badge {
+    background: rgba(255,255,255,.1); backdrop-filter: blur(4px);
+    border-radius: 8px; padding: 5px 12px; font-size: 12px; color: #cbd5e1;
+    border: 1px solid rgba(255,255,255,.15); pointer-events: none; white-space: nowrap;
+}
+#root-select {
+    background: rgba(30,41,59,.9); color: #e2e8f0;
+    border: 1px solid rgba(255,255,255,.2); border-radius: 8px;
+    padding: 4px 8px; font-size: 12px; cursor: pointer;
+}
+#root-select option { background: #1e293b; }
+#loading {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    font-size: 14px; color: #94a3b8; z-index: 20; text-align: center;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+    <div>
+        <h1 class="mb-0"><i class="bi bi-grid-3x3-gap-fill me-2"></i>Fraktal-Stammbaum</h1>
+        <div class="text-muted small mt-1">
+            Jede Person = Rechteck · Fläche proportional zur Nachkommenzahl ·
+            <abbr title="Algorithm 5.1: Recursive Fractal Drawing — Racine, TU Wien 2025">SliceDice nach Racine 2025</abbr>
+        </div>
+    </div>
+    <div class="d-flex gap-2 flex-wrap">
+        <button id="btnReset" class="btn btn-sm btn-outline-light">
+            <i class="bi bi-fullscreen me-1"></i>Zurücksetzen
+        </button>
+        <a href="{% url 'stammbaum_gesamt' %}" class="btn btn-sm btn-outline-primary">
+            <i class="bi bi-diagram-3-fill me-1"></i>Schichten
+        </a>
+        <a href="{% url 'stammbaum_force' %}" class="btn btn-sm btn-outline-primary">
+            <i class="bi bi-share-fill me-1"></i>Kraft
+        </a>
+    </div>
+</div>
+
+<div class="card p-0 border-0" style="border-radius:12px;overflow:hidden;">
+    <div id="fraktal-wrap">
+        <div id="overlay">
+            <div id="stats-badge">Lädt…</div>
+            <select id="root-select" style="display:none">
+                <option value="">Startperson wählen…</option>
+            </select>
+        </div>
+        <div id="loading">
+            <div class="spinner-border spinner-border-sm text-secondary"></div>
+            <div class="mt-1">Berechne Layout…</div>
+        </div>
+        <div id="tooltip"></div>
+        <svg id="svg-fraktal" width="100%" height="100%"></svg>
+    </div>
+</div>
+<div class="text-muted small mt-2">
+    <i class="bi bi-info-circle me-1"></i>
+    Mausrad = Zoom · Ziehen = Schwenken · Klick = Profil ·
+    Hellere Farbe = Elterngeneration · Dunkler = jüngere Generationen
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<script>
+const wrap   = document.getElementById('fraktal-wrap');
+const svg    = d3.select('#svg-fraktal');
+const gMain  = svg.append('g');
+const tt     = document.getElementById('tooltip');
+let   W, H;
+
+const zoom = d3.zoom().scaleExtent([0.05, 100])
+    .on('zoom', e => gMain.attr('transform', e.transform));
+svg.call(zoom);
+
+// ─── Colors ──────────────────────────────────────────────────────────────────
+// Gender gives the hue, depth controls lightness (lighter = older gen)
+function cellFill(d) {
+    const g = d.data.geschlecht;
+    const hue   = g === 'M' ? 215 : g === 'F' ? 340 : 220;
+    const sat   = g === 'U' ? 15  : 65;
+    const light = Math.max(15, 62 - d.depth * 7);   // 62% at root, darker per level
+    return `hsl(${hue},${sat}%,${light}%)`;
+}
+function cellStroke(d) {
+    const g = d.data.geschlecht;
+    return g === 'M' ? 'rgba(59,130,246,.4)'
+         : g === 'F' ? 'rgba(236,72,153,.4)'
+         : 'rgba(100,116,139,.3)';
+}
+function partnerFill(g) {
+    const hue   = g === 'M' ? 215 : g === 'F' ? 340 : 220;
+    const sat   = g === 'U' ? 15  : 65;
+    return `hsl(${hue},${sat}%,35%)`;
+}
+
+// ─── Draw ────────────────────────────────────────────────────────────────────
+function drawTree(data) {
+    gMain.selectAll('*').remove();
+    W = wrap.clientWidth; H = wrap.clientHeight;
+
+    const root = d3.hierarchy(data)
+        .sum(() => 1)                              // every person = 1
+        .sort((a, b) => b.value - a.value);        // largest subtrees first
+
+    // SliceDice = Algorithm 5.1 from paper: alternating H/V splits per depth
+    d3.treemap()
+        .tile(d3.treemapSliceDice)
+        .size([W, H])
+        .paddingOuter(6)
+        .paddingTop(d => d.depth === 0 ? 0 : 18)  // title bar for parent rects
+        .paddingInner(2)
+        .round(false)(root);
+
+    const nodes = root.descendants();
+
+    const cell = gMain.selectAll('g.cell')
+        .data(nodes)
+        .enter().append('g')
+        .attr('class', 'cell')
+        .attr('transform', d => `translate(${d.x0},${d.y0})`);
+
+    // Background rectangle
+    cell.append('rect')
+        .attr('width',  d => Math.max(0, d.x1 - d.x0))
+        .attr('height', d => Math.max(0, d.y1 - d.y0))
+        .attr('fill',   d => cellFill(d))
+        .attr('stroke', d => cellStroke(d))
+        .attr('stroke-width', 0.6)
+        .style('cursor', d => d.data.url ? 'pointer' : 'default')
+        .on('click',     (_, d) => { if (d.data.url) window.location.href = d.data.url; })
+        .on('mouseover', (_, d) => {
+            let html = `<strong>${d.data.name || '?'}</strong>`;
+            if (d.data.geburtsjahr) html += `<br>* ${d.data.geburtsjahr}`;
+            if (d.data.partners && d.data.partners.length) {
+                html += '<br>' + d.data.partners
+                    .map(p => `<span style="opacity:.85">∞ ${p.name}</span>`)
+                    .join('<br>');
+            }
+            html += `<br><span style="opacity:.55">${d.value} im Teilbaum · Gen ${d.depth + 1}</span>`;
+            tt.innerHTML = html; tt.style.display = 'block';
+        })
+        .on('mousemove', e => {
+            const r = wrap.getBoundingClientRect();
+            let x = e.clientX - r.left + 14, y = e.clientY - r.top - 10;
+            if (x + 225 > r.width) x -= 245;
+            if (y + 80  > r.height) y -= 90;
+            tt.style.left = x + 'px'; tt.style.top = y + 'px';
+        })
+        .on('mouseout', () => { tt.style.display = 'none'; });
+
+    // Title bar (only for internal nodes with enough width)
+    cell.filter(d => d.children && (d.x1 - d.x0) >= 24 && (d.y1 - d.y0) >= 18)
+        .each(function(d) {
+            const cw = Math.max(0, d.x1 - d.x0);
+            const g = d.data.geschlecht;
+            const hue = g === 'M' ? 215 : g === 'F' ? 340 : 220;
+            const sat = g === 'U' ? 15 : 65;
+            const light = Math.max(25, 72 - d.depth * 7);
+            const col = `hsl(${hue},${sat}%,${light}%)`;
+            const partner = d.data.partners && d.data.partners[0];
+            const sel = d3.select(this);
+
+            if (partner && cw >= 60) {
+                // Split: left half = person color, right half = partner color
+                const split = Math.round(cw * 0.52);
+                sel.append('rect')
+                    .attr('width', split).attr('height', 16).attr('fill', col)
+                    .style('pointer-events', 'none');
+                const pg = partner.geschlecht;
+                const phue = pg === 'M' ? 215 : pg === 'F' ? 340 : 220;
+                const psat = pg === 'U' ? 15 : 65;
+                const plight = Math.max(25, 72 - d.depth * 7);
+                sel.append('rect')
+                    .attr('x', split).attr('width', cw - split).attr('height', 16)
+                    .attr('fill', `hsl(${phue},${psat}%,${plight}%)`)
+                    .style('pointer-events', 'none');
+                // Thin divider
+                sel.append('line')
+                    .attr('x1', split).attr('y1', 2).attr('x2', split).attr('y2', 14)
+                    .attr('stroke', 'rgba(255,255,255,.4)').attr('stroke-width', 1)
+                    .style('pointer-events', 'none');
+            } else {
+                sel.append('rect')
+                    .attr('width', cw).attr('height', 16).attr('fill', col)
+                    .style('pointer-events', 'none');
+            }
+        });
+
+    // Text labels
+    cell.each(function(d) {
+        const cw = d.x1 - d.x0, ch = d.y1 - d.y0;
+        if (cw < 20 || ch < 12) return;
+        const name = d.data.name || '';
+        const partner = d.data.partners && d.data.partners[0];
+        const hasPartner = partner && cw >= 60;
+        const sel = d3.select(this);
+
+        if (d.children) {
+            // Title bar text
+            const ty = Math.min(12, ch - 2);
+            if (hasPartner) {
+                // Left: person name; Right: "∞ partner"
+                const split = Math.round(cw * 0.52);
+                const fsP = Math.min(10, Math.max(6.5, Math.min(split / 8, 10)));
+                const maxCP = Math.floor((split - 4) / (fsP * 0.58));
+                const lP = name.length > maxCP ? name.slice(0, maxCP - 1) + '…' : name;
+                sel.append('text')
+                    .attr('x', split / 2).attr('y', ty)
+                    .attr('text-anchor', 'middle')
+                    .attr('fill', '#f8fafc').attr('font-size', fsP)
+                    .attr('font-family', 'system-ui,sans-serif').attr('font-weight', '700')
+                    .style('pointer-events', 'none').text(lP);
+
+                const pname = partner.name;
+                const fsQ = Math.min(10, Math.max(6, Math.min((cw - split) / 8, 10)));
+                const maxCQ = Math.floor((cw - split - 4) / (fsQ * 0.58));
+                const lQ = pname.length > maxCQ ? pname.slice(0, maxCQ - 1) + '…' : pname;
+                sel.append('text')
+                    .attr('x', split + (cw - split) / 2).attr('y', ty)
+                    .attr('text-anchor', 'middle')
+                    .attr('fill', '#f8fafc').attr('font-size', fsQ)
+                    .attr('font-family', 'system-ui,sans-serif').attr('font-weight', '600')
+                    .style('pointer-events', 'none').text('∞ ' + lQ);
+            } else {
+                const fs   = Math.min(11, Math.max(7, Math.min(cw / 8, 11)));
+                const maxC = Math.floor(cw / (fs * 0.6));
+                const label = name.length > maxC ? name.slice(0, maxC - 1) + '…' : name;
+                sel.append('text')
+                    .attr('x', cw / 2).attr('y', ty)
+                    .attr('text-anchor', 'middle').attr('fill', '#f8fafc')
+                    .attr('font-size', fs).attr('font-family', 'system-ui,sans-serif')
+                    .attr('font-weight', '600').style('pointer-events', 'none').text(label);
+            }
+        } else {
+            // Leaf node: person name centered, partner below if space allows
+            const fs   = Math.min(11, Math.max(7, Math.min(cw / 8, 11)));
+            const maxC = Math.floor(cw / (fs * 0.6));
+            const label = name.length > maxC ? name.slice(0, maxC - 1) + '…' : name;
+            const ty = hasPartner && ch >= 26 ? ch / 2 - fs * 0.3 : ch / 2 + fs * 0.4;
+            sel.append('text')
+                .attr('x', cw / 2).attr('y', ty)
+                .attr('text-anchor', 'middle').attr('fill', '#f8fafc')
+                .attr('font-size', fs).attr('font-family', 'system-ui,sans-serif')
+                .attr('font-weight', '600').style('pointer-events', 'none').text(label);
+
+            if (hasPartner && ch >= 26) {
+                const fsQ  = Math.max(6, fs * 0.82);
+                const maxCQ = Math.floor(cw / (fsQ * 0.6));
+                const pname = partner.name;
+                const lQ = pname.length > maxCQ ? pname.slice(0, maxCQ - 1) + '…' : pname;
+                sel.append('text')
+                    .attr('x', cw / 2).attr('y', ty + fs + 2)
+                    .attr('text-anchor', 'middle').attr('fill', 'rgba(251,191,36,.9)')
+                    .attr('font-size', fsQ).attr('font-family', 'system-ui,sans-serif')
+                    .attr('font-weight', '500').style('pointer-events', 'none')
+                    .text('∞ ' + lQ);
+            }
+        }
+    });
+
+    // Reset zoom
+    svg.call(zoom.transform, d3.zoomIdentity);
+}
+
+// ─── Load & init ──────────────────────────────────────────────────────────────
+let currentUrl = '/api/stammbaum/fraktal/';
+
+function load(url) {
+    document.getElementById('loading').style.display = 'block';
+    fetch(url)
+        .then(r => r.json())
+        .then(({ tree, candidates, root_pk }) => {
+            document.getElementById('loading').style.display = 'none';
+
+            // Populate dropdown
+            const sel = document.getElementById('root-select');
+            if (candidates && candidates.length > 1) {
+                sel.innerHTML = '';
+                candidates.forEach(c => {
+                    const opt = document.createElement('option');
+                    opt.value = c.id;
+                    opt.textContent = `${c.name} (${c.descendants} Nachk.)`;
+                    if (c.id === root_pk) opt.selected = true;
+                    sel.appendChild(opt);
+                });
+                sel.style.display = 'block';
+            }
+
+            if (!tree || tree.virtual) {
+                document.getElementById('stats-badge').textContent = 'Keine Daten';
+                return;
+            }
+
+            drawTree(tree);
+
+            const countNodes = n => 1 + (n.children ? n.children.reduce((s, c) => s + countNodes(c), 0) : 0);
+            const total = countNodes(tree);
+            document.getElementById('stats-badge').textContent =
+                `${total} Personen · SliceDice-Fraktal`;
+        })
+        .catch(() => {
+            document.getElementById('loading').textContent = 'Fehler beim Laden.';
+        });
+}
+
+document.getElementById('root-select').addEventListener('change', function() {
+    if (this.value) {
+        currentUrl = `/api/stammbaum/fraktal/?root=${this.value}`;
+        load(currentUrl);
+    }
+});
+
+document.getElementById('btnReset').addEventListener('click', () => {
+    svg.transition().duration(400).call(zoom.transform, d3.zoomIdentity);
+});
+
+load(currentUrl);
+</script>
+{% endblock %}

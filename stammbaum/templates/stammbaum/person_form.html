@@ -60,6 +60,10 @@
                         {{ form.geburtsort }}
                     </div>
                     <div class="mb-3">
+                        <label class="form-label">Geburtsname (Mädchenname)</label>
+                        {{ form.geburtsname }}
+                    </div>
+                    <div class="mb-3">
                         <label class="form-label">Sterbedatum</label>
                         <input type="date" name="sterbedatum" class="form-control"
                                value="{% if form.sterbedatum.value %}{{ form.sterbedatum.value|date:'Y-m-d' }}{% endif %}">
@@ -125,6 +129,44 @@
                 </div>
             </div>
         </div>
+
+        {% if person %}
+        <!-- Partner -->
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header"><strong><i class="bi bi-hearts me-1"></i>Partner</strong></div>
+                <div class="card-body">
+                    <div id="partner-list">
+                        {% for item in partner_list %}
+                        <div class="d-flex align-items-center justify-content-between mb-2 partner-row" data-ehe="{{ item.ehe_pk }}">
+                            <a href="{{ item.partner.get_absolute_url }}" class="text-decoration-none">
+                                {{ item.partner.vollname }}
+                            </a>
+                            <button type="button" class="btn btn-sm btn-outline-danger btn-remove-partner"
+                                    data-ehe="{{ item.ehe_pk }}">
+                                <i class="bi bi-x-circle me-1"></i>Trennen
+                            </button>
+                        </div>
+                        {% empty %}
+                        <p class="text-muted small mb-2" id="keine-partner-hint">Keine Partner eingetragen.</p>
+                        {% endfor %}
+                    </div>
+                    <div class="mt-2 position-relative">
+                        <div class="input-group input-group-sm">
+                            <input type="text" id="partner-suche-input" class="form-control"
+                                   placeholder="Person suchen und als Partner hinzufügen…" autocomplete="off">
+                            <button type="button" class="btn btn-outline-primary" id="btn-partner-add" disabled>
+                                <i class="bi bi-person-plus-fill me-1"></i>Hinzufügen
+                            </button>
+                        </div>
+                        <ul id="partner-dropdown" class="list-group shadow"
+                            style="position:absolute;z-index:1000;width:100%;display:none;max-height:200px;overflow-y:auto"></ul>
+                    </div>
+                    <div id="partner-msg" class="small mt-1" style="display:none"></div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
     </div>
 
     <div class="mt-4">
@@ -139,3 +181,117 @@
     </div>
 </form>
 {% endblock %}
+
+{% if person %}
+{% block extra_js %}
+<script>
+(function() {
+    const personPk = {{ person.pk }};
+    const input    = document.getElementById('partner-suche-input');
+    const dropdown = document.getElementById('partner-dropdown');
+    const btnAdd   = document.getElementById('btn-partner-add');
+    const list     = document.getElementById('partner-list');
+    const msgEl    = document.getElementById('partner-msg');
+    let selectedId = null, searchTimer = null;
+
+    function showMsg(text, ok) {
+        msgEl.textContent = text;
+        msgEl.className = 'small mt-1 ' + (ok ? 'text-success' : 'text-danger');
+        msgEl.style.display = 'block';
+        setTimeout(() => { msgEl.style.display = 'none'; }, 3000);
+    }
+
+    function removeHint() {
+        const hint = document.getElementById('keine-partner-hint');
+        if (hint) hint.remove();
+    }
+
+    input.addEventListener('input', function() {
+        clearTimeout(searchTimer);
+        selectedId = null;
+        btnAdd.disabled = true;
+        const q = this.value.trim();
+        if (q.length < 2) { dropdown.style.display = 'none'; return; }
+        searchTimer = setTimeout(() => {
+            fetch(`/api/personen/suche/?q=${encodeURIComponent(q)}&exclude=${personPk}`)
+                .then(r => r.json())
+                .then(data => {
+                    dropdown.innerHTML = '';
+                    if (!data.length) { dropdown.style.display = 'none'; return; }
+                    data.forEach(p => {
+                        const li = document.createElement('li');
+                        li.className = 'list-group-item list-group-item-action py-1 px-2';
+                        li.style.cursor = 'pointer';
+                        li.textContent = p.name;
+                        li.addEventListener('click', () => {
+                            input.value = p.name;
+                            selectedId = p.id;
+                            btnAdd.disabled = false;
+                            dropdown.style.display = 'none';
+                        });
+                        dropdown.appendChild(li);
+                    });
+                    dropdown.style.display = 'block';
+                });
+        }, 250);
+    });
+
+    document.addEventListener('click', e => {
+        if (!e.target.closest('#partner-suche-input') && !e.target.closest('#partner-dropdown'))
+            dropdown.style.display = 'none';
+    });
+
+    btnAdd.addEventListener('click', function() {
+        if (!selectedId) return;
+        const csrfToken = document.cookie.match(/csrftoken=([^;]+)/)?.[1] || '';
+        fetch(`/personen/${personPk}/partner/hinzufuegen/`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+            body: JSON.stringify({ partner_id: selectedId }),
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (!data.ok) { showMsg(data.error, false); return; }
+            removeHint();
+            const row = document.createElement('div');
+            row.className = 'd-flex align-items-center justify-content-between mb-2 partner-row';
+            row.dataset.ehe = data.ehe_pk;
+            row.innerHTML = `<a href="${data.partner_url}" class="text-decoration-none">${data.partner_name}</a>
+                <button type="button" class="btn btn-sm btn-outline-danger btn-remove-partner"
+                        data-ehe="${data.ehe_pk}">
+                    <i class="bi bi-x-circle me-1"></i>Trennen
+                </button>`;
+            list.appendChild(row);
+            input.value = ''; selectedId = null; btnAdd.disabled = true;
+            showMsg('Partner hinzugefügt.', true);
+        });
+    });
+
+    list.addEventListener('click', function(e) {
+        const btn = e.target.closest('.btn-remove-partner');
+        if (!btn) return;
+        const ehePk = btn.dataset.ehe;
+        const csrfToken = document.cookie.match(/csrftoken=([^;]+)/)?.[1] || '';
+        if (!confirm('Partnerschaft wirklich aufheben?')) return;
+        fetch(`/personen/${personPk}/partner/entfernen/${ehePk}/`, {
+            method: 'POST',
+            headers: { 'X-CSRFToken': csrfToken },
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (!data.ok) { showMsg(data.error, false); return; }
+            btn.closest('.partner-row').remove();
+            if (!list.querySelector('.partner-row')) {
+                const hint = document.createElement('p');
+                hint.id = 'keine-partner-hint';
+                hint.className = 'text-muted small mb-2';
+                hint.textContent = 'Keine Partner eingetragen.';
+                list.prepend(hint);
+            }
+            showMsg('Partnerschaft aufgehoben.', true);
+        });
+    });
+})();
+</script>
+{% endblock %}
+{% endif %}

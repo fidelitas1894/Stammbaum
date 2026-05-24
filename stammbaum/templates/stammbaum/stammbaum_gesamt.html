@@ -87,10 +87,10 @@
 <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
 <script>
 // ─── Layout constants ───────────────────────────────────────────────────────
-const NW = 150, NH = 50, NR = 9;   // node width / height / corner-radius
-const HGAP = 20;   // gap between separate node units
-const CGAP = 14;   // gap between the two cards of a couple
-const GEN_H = 128; // vertical distance between generation rows
+const NW = 160, NH = 52, NR = 9;   // node width / height / corner-radius
+const HGAP = 26;   // gap between separate node units
+const CGAP = 16;   // gap between the two cards of a couple
+const GEN_H = 135; // vertical distance between generation rows
 
 const wrap = document.getElementById('graph-wrap');
 const W = wrap.clientWidth, H = wrap.clientHeight;
@@ -145,11 +145,11 @@ fetch('/api/stammbaum/gesamt/')
             parsOf.get(l.target)?.push(l.source);
         });
 
-        // ── 1. Generation assignment (BFS, max-depth so children ≥ parent+1) ──
+        // ── 1. Generation = max-depth from roots ─────────────────────────────
         const gen = new Map();
         const roots = nodes.filter(n => parsOf.get(n.id).length === 0);
         roots.forEach(n => gen.set(n.id, 0));
-        const bq = roots.map(n => n.id);
+        const bq = [...roots.map(n => n.id)];
         while (bq.length) {
             const id = bq.shift(), g0 = gen.get(id);
             kidsOf.get(id).forEach(cid => {
@@ -161,37 +161,90 @@ fetch('/api/stammbaum/gesamt/')
         }
         nodes.forEach(n => { if (!gen.has(n.id)) gen.set(n.id, 0); });
 
+        // ── 2. Couple equalization: push shallower partner into the same row ─
+        // Partners who share children must land in the same visual row so they
+        // appear side-by-side. Then propagate to keep every child below parents.
+        nodes.forEach(n => {
+            const ps = parsOf.get(n.id);
+            if (ps.length < 2) return;
+            for (let i = 0; i < ps.length; i++)
+                for (let j = i + 1; j < ps.length; j++) {
+                    if (!byId.has(ps[i]) || !byId.has(ps[j])) continue;
+                    const mx = Math.max(gen.get(ps[i]), gen.get(ps[j]));
+                    gen.set(ps[i], mx); gen.set(ps[j], mx);
+                }
+        });
+        let eqCh = true;
+        while (eqCh) {
+            eqCh = false;
+            links.forEach(l => {
+                const pg = gen.get(l.source), cg = gen.get(l.target);
+                if (pg != null && cg != null && cg < pg + 1) { gen.set(l.target, pg + 1); eqCh = true; }
+            });
+        }
+
         const maxG = Math.max(...gen.values());
-        const gens = Array.from({length: maxG + 1}, () => []);
+        const gens  = Array.from({length: maxG + 1}, () => []);
         nodes.forEach(n => gens[gen.get(n.id)].push(n));
 
-        // ── 2. Bottom-up x layout ─────────────────────────────────────────────
-        // Process from youngest (maxG) upward to oldest (0).
-        // At each level: detect couples, sort as units, place trying to center
-        // each unit over its children.  Forward + backward pass resolve overlaps.
+        // ── 2. Top-down rank pass ─────────────────────────────────────────────
+        // Assigns ordering index; siblings with no children still sort correctly.
+        const rank = new Map();
+        gens[0].sort((a, b) => a.name.localeCompare(b.name));
+        gens[0].forEach((n, i) => rank.set(n.id, i));
 
-        const coupleData = []; // for drawing marriage connectors later
+        for (let g0 = 1; g0 <= maxG; g0++) {
+            gens[g0].sort((a, b) => {
+                const pRank = id => rank.get(id) ?? 0;
+                // For a node with no known parents in earlier generations, look for a
+                // co-parent (same gen, shares a child in a deeper gen) that does have
+                // known parents. Inherit that co-parent's pAvg + 0.5 so the root node
+                // sorts right after its partner instead of being pushed to the far end.
+                const pAvgOf = n => {
+                    const ps = parsOf.get(n.id).filter(p => (gen.get(p) ?? 0) < g0);
+                    if (ps.length) return ps.reduce((s, p) => s + pRank(p), 0) / ps.length;
+                    for (const cid of kidsOf.get(n.id)) {
+                        if ((gen.get(cid) ?? 0) <= g0) continue;
+                        for (const pid of parsOf.get(cid)) {
+                            if (pid === n.id || (gen.get(pid) ?? -1) !== g0) continue;
+                            const coPs = parsOf.get(pid).filter(p => (gen.get(p) ?? 0) < g0);
+                            if (coPs.length)
+                                return coPs.reduce((s, p) => s + pRank(p), 0) / coPs.length + 0.5;
+                        }
+                    }
+                    return 1e9;
+                };
+                const aAvg = pAvgOf(a), bAvg = pAvgOf(b);
+                return aAvg !== bAvg ? aAvg - bAvg : a.name.localeCompare(b.name);
+            });
+            gens[g0].forEach((n, i) => rank.set(n.id, i));
+        }
+
+        // ── 3. Bottom-up x layout ─────────────────────────────────────────────
+        // idealX = average x of direct children (already placed in deeper rows).
+        // Couples sharing children in the same natural generation are grouped.
+        const coupleData = [];
+        const coupleLinks = []; // {a, b, g0} — rebuilt after correction pass
 
         for (let g0 = maxG; g0 >= 0; g0--) {
             const grpNodes = gens[g0];
 
-            // Ideal x = average x of all DIRECT children (any deeper generation)
             grpNodes.forEach(n => {
                 const xs = kidsOf.get(n.id)
-                    .filter(cid => gen.get(cid) > g0)
+                    .filter(cid => (gen.get(cid) ?? 0) > g0)
                     .map(cid => byId.get(cid)).filter(Boolean)
                     .map(c => c.x).filter(x => x !== undefined);
                 n._ix = xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
             });
 
-            // Couple detection: two nodes in gen g0 that share a direct child
-            const partnerOf = new Map(); // id → partnerId
+            // Couple detection: same generation row + shared child in deeper row
+            const partnerOf = new Map();
             grpNodes.forEach(n => {
                 if (partnerOf.has(n.id)) return;
                 for (const cid of kidsOf.get(n.id)) {
-                    if (gen.get(cid) <= g0) continue;
+                    if ((gen.get(cid) ?? 0) <= g0) continue;
                     for (const pid of parsOf.get(cid)) {
-                        if (pid !== n.id && gen.get(pid) === g0 &&
+                        if (pid !== n.id && (gen.get(pid) ?? -1) === g0 &&
                             !partnerOf.has(pid) && byId.has(pid)) {
                             partnerOf.set(n.id, pid);
                             partnerOf.set(pid, n.id);
@@ -202,12 +255,14 @@ fetch('/api/stammbaum/gesamt/')
                 }
             });
 
-            // Build units: couple (2 nodes) or single (1 node)
             const units = [];
             const done  = new Set();
+
             const sorted = [...grpNodes].sort((a, b) => {
-                const d = (a._ix ?? 1e9) - (b._ix ?? 1e9);
-                return d !== 0 ? d : a.name.localeCompare(b.name);
+                if (a._ix !== null && b._ix !== null) return a._ix - b._ix;
+                if (a._ix !== null) return -1;
+                if (b._ix !== null) return  1;
+                return (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0);
             });
 
             for (const n of sorted) {
@@ -217,65 +272,161 @@ fetch('/api/stammbaum/gesamt/')
                 if (pid && !done.has(pid)) {
                     done.add(pid);
                     const partner = byId.get(pid);
-                    // ♂ on left, ♀ on right (or preserve order)
-                    const [L, R] = (n.geschlecht === 'M' || partner.geschlecht === 'F')
-                        && n.geschlecht !== partner.geschlecht
-                        ? [n, partner] : [n, partner];
+                    const [L, R] = (n.geschlecht === 'F' && partner.geschlecht === 'M')
+                        ? [partner, n] : [n, partner];
                     const ixs = [L._ix, R._ix].filter(x => x != null);
-                    units.push({
-                        nodes: [L, R],
-                        ix: ixs.length ? ixs.reduce((a,b)=>a+b)/ixs.length : null,
-                        w: NW * 2 + CGAP,
-                        couple: true,
-                    });
+                    const ix  = ixs.length
+                        ? ixs.reduce((a, b) => a + b) / ixs.length
+                        : ((rank.get(L.id) ?? 0) + (rank.get(R.id) ?? 0)) / 2 * (NW + HGAP);
+                    units.push({ nodes:[L, R], ix, w:NW*2+CGAP, couple:true });
                 } else {
-                    units.push({ nodes:[n], ix:n._ix, w:NW, couple:false });
+                    const ix = n._ix !== null ? n._ix : (rank.get(n.id) ?? 0) * (NW + HGAP);
+                    units.push({ nodes:[n], ix, w:NW, couple:false });
                 }
             }
 
-            // Sort units by their ideal x
-            units.sort((a, b) => (a.ix ?? 1e9) - (b.ix ?? 1e9));
+            // Phase 1: anchored units (have children in deeper rows) — simple
+            // forward pass only. Width is unconstrained; no backward compression.
+            const anchoredU = units.filter(u => u.nodes.some(n => n._ix !== null));
+            const leafU     = units.filter(u => u.nodes.every(n => n._ix === null));
 
-            // Initial center: use idealX if available, else sequential fallback
-            units.forEach((u, i) => {
-                u._c = u.ix ?? (i > 0
-                    ? units[i-1]._c + (units[i-1].w + u.w) / 2 + HGAP
-                    : 0);
-            });
-
-            // Forward pass: push right to ensure minimum gap
-            for (let i = 1; i < units.length; i++) {
-                const need = units[i-1]._c + (units[i-1].w + units[i].w) / 2 + HGAP;
-                if (units[i]._c < need) units[i]._c = need;
-            }
-            // Backward pass: pull left where there is room (toward idealX)
-            for (let i = units.length - 2; i >= 0; i--) {
-                const cap = units[i+1]._c - (units[i+1].w + units[i].w) / 2 - HGAP;
-                if (units[i]._c > cap) units[i]._c = cap;
+            anchoredU.sort((a, b) => a.ix - b.ix);
+            anchoredU.forEach(u => { u._c = u.ix; });
+            for (let i = 1; i < anchoredU.length; i++) {
+                const need = anchoredU[i-1]._c + (anchoredU[i-1].w + anchoredU[i].w)/2 + HGAP;
+                if (anchoredU[i]._c < need) anchoredU[i]._c = need;
             }
 
-            // Apply positions and record couple segments
+            // Phase 2: leaf units inserted into best gap nearest their ideal.
+            leafU.sort((a, b) => a.ix - b.ix);
+            const placed = anchoredU.slice().sort((a, b) => a._c - b._c);
+            for (const leaf of leafU) {
+                const ideal = leaf.ix;
+                const minD  = u => (u.w + leaf.w)/2 + HGAP;
+                const ok    = pos => placed.every(u => Math.abs(pos - u._c) >= minD(u) - 0.1);
+                const cands = [ideal, ...placed.flatMap(u => [u._c - minD(u), u._c + minD(u)])];
+                let best = cands
+                    .filter(ok)
+                    .reduce((b, pos) => b===null || Math.abs(pos-ideal)<Math.abs(b-ideal) ? pos : b, null);
+                if (best === null)
+                    best = placed.length ? placed[placed.length-1]._c + minD(placed[placed.length-1]) : ideal;
+                leaf._c = best;
+                const idx = placed.findIndex(u => u._c > best);
+                idx === -1 ? placed.push(leaf) : placed.splice(idx, 0, leaf);
+            }
+
             units.forEach(u => {
                 if (u.couple) {
-                    u.nodes[0].x = u._c - (CGAP + NW) / 2;  // left partner center
-                    u.nodes[1].x = u._c + (CGAP + NW) / 2;  // right partner center
-                    coupleData.push({
-                        x1: u.nodes[0].x + NW / 2,   // right edge of left card
-                        x2: u.nodes[1].x - NW / 2,   // left edge of right card
-                        y:  0,  // y assigned below
-                        u,
-                    });
+                    u.nodes[0].x = u._c - (CGAP + NW) / 2;
+                    u.nodes[1].x = u._c + (CGAP + NW) / 2;
+                    coupleLinks.push({ a: u.nodes[0], b: u.nodes[1], g0 });
                 } else {
                     u.nodes[0].x = u._c;
                 }
             });
 
-            // Assign y (constant per generation)
             grpNodes.forEach(n => { n.y = g0 * GEN_H; });
         }
 
-        // Set couple connector y now that y is assigned
-        coupleData.forEach(c => { c.y = c.u.nodes[0].y; });
+        // ── Top-down correction pass (RT second-walk idea) ────────────────────
+        // After the bottom-up sweep, parents may have drifted away from their
+        // children. Walk top-down and nudge each unit (single or couple) toward
+        // the centroid of its children, as far as neighbouring units allow.
+        { const cpMap = new Map();
+          coupleLinks.forEach(cl => { cpMap.set(cl.a.id, cl.b); cpMap.set(cl.b.id, cl.a); });
+          const minSep = NW + HGAP;
+
+          for (let g0 = 0; g0 < maxG; g0++) {
+            // Build sorted unit list for this generation
+            const us = [];
+            const seen = new Set();
+            [...gens[g0]].sort((a, b) => a.x - b.x).forEach(n => {
+                if (seen.has(n.id)) return;
+                seen.add(n.id);
+                const partner = cpMap.get(n.id);
+                if (partner && !seen.has(partner.id)) {
+                    seen.add(partner.id);
+                    us.push([n, partner]);
+                } else {
+                    us.push([n]);
+                }
+            });
+
+            us.forEach((unit, i) => {
+                // Ideal x = average x of all children in deeper rows
+                const childXs = unit.flatMap(n =>
+                    kidsOf.get(n.id)
+                        .filter(cid => (gen.get(cid) ?? 0) > g0)
+                        .map(cid => byId.get(cid)?.x)
+                        .filter(x => x !== undefined)
+                );
+                if (!childXs.length) return;
+                const ideal = childXs.reduce((a, b) => a + b) / childXs.length;
+                const cur   = unit.reduce((s, n) => s + n.x, 0) / unit.length;
+                let move    = ideal - cur;
+                if (Math.abs(move) < 0.5) return;
+
+                // Clamp to available room from neighbours
+                const myLeft  = Math.min(...unit.map(n => n.x));
+                const myRight = Math.max(...unit.map(n => n.x));
+                if (move > 0 && i < us.length - 1) {
+                    const nextLeft = Math.min(...us[i+1].map(n => n.x));
+                    move = Math.min(move, Math.max(0, nextLeft - myRight - minSep));
+                } else if (move < 0 && i > 0) {
+                    const prevRight = Math.max(...us[i-1].map(n => n.x));
+                    move = Math.max(move, -Math.max(0, myLeft - prevRight - minSep));
+                }
+                if (Math.abs(move) >= 0.5) unit.forEach(n => { n.x += move; });
+            });
+          }
+        }
+
+        // Rebuild coupleData from final node positions after correction pass
+        coupleLinks.forEach(({ a, b, g0 }) => {
+            const [L, R] = a.x <= b.x ? [a, b] : [b, a];
+            coupleData.push({
+                x1: L.x + NW / 2,
+                x2: R.x - NW / 2,
+                y: g0 * GEN_H,
+            });
+        });
+
+        // Couple pair set for single-trunk connector logic
+        const coupleSet = new Set(coupleLinks.map(cl =>
+            `${Math.min(cl.a.id, cl.b.id)}_${Math.max(cl.a.id, cl.b.id)}`
+        ));
+
+        // ── Float root nodes that are > 1 row above their nearest child ─────
+        // After equalization a root like "Erich → Tatjana (gen 6)" ends up in a
+        // large gen-0 row far from Tatjana. Float them to just above their child.
+        // After floating, resolve any overlap with nodes already at that y level
+        // by finding the nearest collision-free x closest to the ideal position.
+        nodes.forEach(n => {
+            if ((gen.get(n.id) ?? 0) !== 0 || parsOf.get(n.id).length > 0) return;
+            const kids = kidsOf.get(n.id).map(cid => byId.get(cid)).filter(c => c?.y != null);
+            if (!kids.length) return;
+            const nearY = Math.min(...kids.map(c => c.y));
+            if (nearY <= GEN_H) return;          // child is right below — no float needed
+            n.y = nearY - GEN_H;                 // one row above the nearest child
+            const ideal = kids.reduce((s, c) => s + c.x, 0) / kids.length;
+            n.x = ideal;
+
+            // Resolve overlap with nodes already placed at this y level
+            const minSep = NW + HGAP;
+            const row = nodes
+                .filter(o => o !== n && o.x != null && Math.abs((o.y ?? -9e9) - n.y) < 2)
+                .sort((a, b) => a.x - b.x);
+            if (!row.length) return;
+            // Candidate positions: ideal, and just left/right of each row node
+            const candidates = [ideal, ...row.flatMap(o => [o.x - minSep, o.x + minSep])];
+            const best = candidates
+                .filter(pos => row.every(o => Math.abs(pos - o.x) >= minSep - 0.5))
+                .reduce((b, pos) =>
+                    b === null || Math.abs(pos - ideal) < Math.abs(b - ideal) ? pos : b, null);
+            // Only move if the collision-free spot is close; otherwise stay at ideal
+            // (a slight visual overlap is better than being pushed to the far edge).
+            if (best !== null && Math.abs(best - ideal) <= 2 * (NW + HGAP)) n.x = best;
+        });
 
         // Center entire graph around x = 0
         const allX = nodes.map(n => n.x).filter(x => x !== undefined);
@@ -283,20 +434,86 @@ fetch('/api/stammbaum/gesamt/')
         nodes.forEach(n => { n.x -= xOff; });
         coupleData.forEach(c => { c.x1 -= xOff; c.x2 -= xOff; });
 
-        // ── 3. Draw ───────────────────────────────────────────────────────────
+        // ── Draw: orthogonal family connectors ───────────────────────────────
+        // Group children by their exact parent set so every family gets one
+        // shared trunk + sibling bus instead of N individual curves.
+        const famByKey = new Map();
+        nodes.forEach(c => {
+            const cg = gen.get(c.id);
+            const cPars = parsOf.get(c.id)
+                .filter(pid => byId.has(pid) && (gen.get(pid) ?? 0) < cg)
+                .sort((a, b) => a - b);
+            if (!cPars.length) return;
+            const key = cPars.join('_');
+            if (!famByKey.has(key)) famByKey.set(key, { parentIds: cPars, children: [] });
+            famByKey.get(key).children.push(c);
+        });
 
-        // Parent → child bezier curves (bottom-center of parent → top-center of child)
-        root.append('g').selectAll('path').data(links).enter().append('path')
-            .attr('class', 'link-path')
-            .attr('d', d => {
-                const s = byId.get(d.source), t = byId.get(d.target);
-                if (!s || !t || s.x === undefined || t.x === undefined) return '';
-                const sy = s.y + NH / 2, ty = t.y - NH / 2, cy = (sy + ty) / 2;
-                return `M${s.x},${sy} C${s.x},${cy} ${t.x},${cy} ${t.x},${ty}`;
+        const connGroup = root.append('g');
+        const wire = sel => sel
+            .attr('fill', 'none').attr('stroke', '#94a3b8')
+            .attr('stroke-width', 1.5).attr('stroke-opacity', 0.55)
+            .attr('stroke-linecap', 'round');
+
+        famByKey.forEach(({ parentIds, children }) => {
+            const parents = parentIds.map(pid => byId.get(pid)).filter(Boolean);
+            if (!parents.length) return;
+
+            const forkX  = parents.reduce((s, p) => s + p.x, 0) / parents.length;
+            const parBot = Math.max(...parents.map(p => p.y + NH / 2));
+            const chiTop = Math.min(...children.map(c => c.y - NH / 2));
+            const span   = chiTop - parBot;
+            const busY   = chiTop - span * 0.22;
+
+            // For detected couples: single trunk from couple-bar midpoint straight down.
+            // For non-couple parents: elbow from each parent to forkX.
+            const isCouple = parents.length === 2 && coupleSet.has(
+                `${Math.min(parents[0].id, parents[1].id)}_${Math.max(parents[0].id, parents[1].id)}`
+            );
+
+            if (isCouple) {
+                // Trunk starts at the couple-bar level (center of couple cards),
+                // passes behind the lower half of the cards (hidden by nodes), then continues down.
+                const coupleY = parents.reduce((s, p) => s + p.y, 0) / parents.length;
+                wire(connGroup.append('line'))
+                    .attr('x1', forkX).attr('y1', coupleY)
+                    .attr('x2', forkX).attr('y2', busY);
+            } else {
+                const stemY = parBot + span * 0.40;
+                parents.forEach(p => {
+                    const py = p.y + NH / 2;
+                    if (Math.abs(p.x - forkX) < 2) {
+                        wire(connGroup.append('line'))
+                            .attr('x1', p.x).attr('y1', py)
+                            .attr('x2', p.x).attr('y2', stemY);
+                    } else {
+                        wire(connGroup.append('polyline'))
+                            .attr('points', `${p.x},${py} ${p.x},${stemY} ${forkX},${stemY}`);
+                    }
+                });
+                if (busY > stemY + 2) {
+                    wire(connGroup.append('line'))
+                        .attr('x1', forkX).attr('y1', stemY)
+                        .attr('x2', forkX).attr('y2', busY);
+                }
+            }
+
+            // Horizontal sibling bus
+            const xs = children.map(c => c.x);
+            wire(connGroup.append('line'))
+                .attr('x1', Math.min(forkX, ...xs)).attr('y1', busY)
+                .attr('x2', Math.max(forkX, ...xs)).attr('y2', busY);
+
+            // Vertical drop to each child
+            children.forEach(c => {
+                wire(connGroup.append('line'))
+                    .attr('x1', c.x).attr('y1', busY)
+                    .attr('x2', c.x).attr('y2', c.y - NH / 2);
             });
+        });
 
-        // Couple marriage bars
-        root.append('g').selectAll('line').data(coupleData).enter().append('line')
+        // Couple marriage bars (same-generation partners)
+        connGroup.selectAll('line.couple-bar').data(coupleData).enter().append('line')
             .attr('class', 'couple-bar')
             .attr('x1', d => d.x1).attr('y1', d => d.y)
             .attr('x2', d => d.x2).attr('y2', d => d.y);

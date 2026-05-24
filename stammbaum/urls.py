@@ -5,10 +5,8 @@ urlpatterns = [
     path('', views.index, name='index'),
     path('stammbaum/', views.stammbaum, name='stammbaum'),
     path('stammbaum/gesamt/', views.stammbaum_gesamt, name='stammbaum_gesamt'),
-    path('stammbaum/bfs/', views.stammbaum_bfs, name='stammbaum_bfs'),
     path('stammbaum/genogramm/', views.stammbaum_genogramm, name='stammbaum_genogramm'),
     path('stammbaum/fraktal/', views.stammbaum_fraktal, name='stammbaum_fraktal'),
-    path('stammbaum/kraft/', views.stammbaum_force, name='stammbaum_force'),
     path('api/stammbaum/gesamt/', views.stammbaum_gesamt_json, name='stammbaum_gesamt_json'),
     path('api/stammbaum/fraktal/', views.stammbaum_fraktal_json, name='stammbaum_fraktal_json'),
     path('api/stammbaum/<int:person_id>/', views.stammbaum_json, name='stammbaum_json'),
@@ -33,6 +31,4 @@ urlpatterns = [
     path('export/gedcom/', views.export_gedcom, name='export_gedcom'),
     path('export/csv/', views.export_csv, name='export_csv'),
     path('import/', views.import_view, name='import'),
-    path('stammbaum/sugiyama/', views.stammbaum_sugiyama, name='stammbaum_sugiyama'),
-    path('api/stammbaum/sugiyama/', views.stammbaum_sugiyama_json, name='stammbaum_sugiyama_json'),
 ]

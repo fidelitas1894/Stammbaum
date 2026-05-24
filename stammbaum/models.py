@@ -139,6 +139,7 @@ class Ort(models.Model):
     lat = models.FloatField(null=True, blank=True)
     lon = models.FloatField(null=True, blank=True)
     geocodiert_am = models.DateTimeField(null=True, blank=True)
+    geo_problem = models.BooleanField(default=False)
 
     class Meta:
         verbose_name = 'Ort'

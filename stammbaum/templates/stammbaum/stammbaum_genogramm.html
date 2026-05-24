@@ -1,0 +1,507 @@
+{% extends "stammbaum/base.html" %}
+{% block title %}Genogramm{% endblock %}
+{% block extra_css %}
+<style>
+#graph-wrap {
+    width: 100%; height: 87vh;
+    background: #fafafa;
+    border-radius: 12px; overflow: hidden; position: relative; cursor: grab;
+    box-shadow: 0 2px 16px rgba(0,0,0,.09);
+}
+#graph-wrap:active { cursor: grabbing; }
+.person { cursor: pointer; }
+.person:hover > :not(text) { opacity: .78; }
+.lbl-name  { font: 600 9.5px/1.25 system-ui,sans-serif; fill: #1e293b; pointer-events:none; }
+.lbl-dates { font: 8.5px/1.25 system-ui,sans-serif;     fill: #64748b; pointer-events:none; }
+.fam-line  { stroke: #94a3b8; stroke-width: 1.6; stroke-linecap: square; fill: none; }
+.couple-bar{ stroke: #f59e0b; stroke-width: 2.4; stroke-linecap: butt;  fill: none; }
+.mate-bar  { stroke: #f59e0b; stroke-width: 1.6; stroke-dasharray: 5 3; fill: none; }
+.gen-band  { fill: rgba(100,116,139,.023); }
+#tooltip {
+    position: absolute; background: rgba(15,23,42,.88); color: #f1f5f9;
+    border-radius: 8px; padding: 8px 14px; font-size:13px; pointer-events:none;
+    display:none; z-index:10; max-width:240px; line-height:1.4;
+    box-shadow: 0 4px 20px rgba(0,0,0,.3);
+}
+#stats-badge {
+    position:absolute; top:14px; left:14px;
+    background:rgba(255,255,255,.93); border-radius:8px; padding:6px 14px;
+    font-size:12px; color:#475569; border:1px solid rgba(148,163,184,.3);
+    pointer-events:none; z-index:5;
+}
+#legend {
+    position:absolute; bottom:14px; right:14px;
+    background:rgba(255,255,255,.93); border-radius:8px; padding:7px 13px;
+    font-size:11px; color:#475569; border:1px solid rgba(148,163,184,.3);
+    pointer-events:none; z-index:5; display:flex; gap:13px; align-items:center;
+    flex-wrap:wrap; max-width:380px;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+    <div>
+        <h1 class="mb-0"><i class="bi bi-people-fill me-2"></i>Genogramm</h1>
+        <div class="text-muted small mt-1">
+            Gerichtetes Familienlayout ·
+            <abbr title="Genogramm-Symbole nach McGoldrick & Gerson (1985) — Quadrat = Mann, Kreis = Frau, ✕ = verstorben">Symbole nach McGoldrick &amp; Gerson · Konzept nach JointJS</abbr>
+        </div>
+    </div>
+    <div class="d-flex gap-2 flex-wrap align-items-center">
+        <button id="btnFit" class="btn btn-sm btn-outline-secondary">
+            <i class="bi bi-fullscreen me-1"></i>Zentrieren
+        </button>
+        <a href="{% url 'stammbaum_bfs' %}"    class="btn btn-sm btn-outline-primary"><i class="bi bi-layers-fill me-1"></i>BFS</a>
+        <a href="{% url 'stammbaum_gesamt' %}" class="btn btn-sm btn-outline-primary"><i class="bi bi-diagram-3-fill me-1"></i>Schichten</a>
+        <a href="{% url 'stammbaum_force' %}"  class="btn btn-sm btn-outline-primary"><i class="bi bi-share-fill me-1"></i>Kraft</a>
+    </div>
+</div>
+
+<div class="card p-0 border-0" style="border-radius:12px;overflow:hidden;">
+    <div id="graph-wrap">
+        <div id="stats-badge">Lädt…</div>
+        <div id="tooltip"></div>
+        <div id="legend">
+            <span>
+                <svg width="14" height="14" style="vertical-align:middle;margin-right:4px">
+                    <rect x="1" y="1" width="12" height="12" rx="2" fill="#dbeafe" stroke="#3b82f6" stroke-width="1.5"/>
+                </svg>Mann
+            </span>
+            <span>
+                <svg width="14" height="14" style="vertical-align:middle;margin-right:4px">
+                    <circle cx="7" cy="7" r="6" fill="#fce7f3" stroke="#ec4899" stroke-width="1.5"/>
+                </svg>Frau
+            </span>
+            <span>
+                <svg width="14" height="14" style="vertical-align:middle;margin-right:4px">
+                    <rect x="1" y="1" width="12" height="12" rx="2" fill="#dbeafe" stroke="#3b82f6" stroke-width="1.5"/>
+                    <line x1="2" y1="2" x2="12" y2="12" stroke="#64748b" stroke-width="1.6"/>
+                    <line x1="12" y1="2" x2="2" y2="12" stroke="#64748b" stroke-width="1.6"/>
+                </svg>verstorben
+            </span>
+            <span>
+                <svg width="22" height="10" style="vertical-align:middle;margin-right:4px">
+                    <line x1="0" y1="5" x2="22" y2="5" stroke="#f59e0b" stroke-width="2.2"/>
+                </svg>Ehe / Partnerschaft
+            </span>
+        </div>
+        <svg id="svg-gram" width="100%" height="100%"></svg>
+    </div>
+</div>
+<div class="text-muted small mt-2">
+    <i class="bi bi-info-circle me-1"></i>
+    Mausrad = Zoom · Ziehen = Schwenken · Klick = Profil
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<script>
+// ── Constants ─────────────────────────────────────────────────────────────────
+const SYM  = 34;        // symbol side/diameter in px
+const HALF = SYM / 2;
+const CGAP = 26;        // gap between couple symbols (marriage bar passes here)
+const HGAP = 18;        // minimum gap between adjacent layout units
+const GEN_H = 110;      // vertical centre-to-centre between generations
+const TEXT_PAD = 13;    // gap from symbol bottom to first text line
+const LINE_H = 12;      // line height for text
+
+const wrap = document.getElementById('graph-wrap');
+const W = wrap.clientWidth, H = wrap.clientHeight;
+const svg  = d3.select('#svg-gram');
+
+const zoom = d3.zoom().scaleExtent([0.03, 8])
+    .on('zoom', e => gRoot.attr('transform', e.transform));
+svg.call(zoom);
+
+const gRoot    = svg.append('g');
+const gBands   = gRoot.append('g');
+const gEdges   = gRoot.append('g');  // family connectors (below symbols)
+const gCouples = gRoot.append('g');  // couple/mate bars (below symbols)
+const gNodes   = gRoot.append('g');  // person symbols (on top)
+
+// ── Layout ────────────────────────────────────────────────────────────────────
+function computeLayout(nodes, links, ehen) {
+    const byId   = new Map(nodes.map(n => [n.id, n]));
+    const kidsOf = new Map(nodes.map(n => [n.id, []]));
+    const parsOf = new Map(nodes.map(n => [n.id, []]));
+    links.forEach(l => {
+        kidsOf.get(l.source)?.push(l.target);
+        parsOf.get(l.target)?.push(l.source);
+    });
+
+    // ── Phase 1: BFS generation (longest path from roots) ────────────────────
+    const gen = new Map();
+    nodes.filter(n => !parsOf.get(n.id).length).forEach(n => gen.set(n.id, 0));
+    const bq = [...gen.keys()];
+    while (bq.length) {
+        const id = bq.shift(), g = gen.get(id);
+        kidsOf.get(id).forEach(cid => {
+            if (!gen.has(cid) || gen.get(cid) < g + 1) { gen.set(cid, g + 1); bq.push(cid); }
+        });
+    }
+    nodes.forEach(n => { if (!gen.has(n.id)) gen.set(n.id, 0); });
+
+    // Small-gap co-parent equalization (gap ≤ 2 only)
+    nodes.forEach(n => {
+        const ps = parsOf.get(n.id);
+        if (ps.length < 2) return;
+        const gs = ps.map(p => gen.get(p) ?? 0);
+        const mx = Math.max(...gs);
+        if (mx - Math.min(...gs) > 2) return;
+        ps.forEach(p => { if ((gen.get(p) ?? 0) < mx) gen.set(p, mx); });
+    });
+    let changed = true;
+    while (changed) {
+        changed = false;
+        links.forEach(l => {
+            const pg = gen.get(l.source) ?? 0, cg = gen.get(l.target) ?? 0;
+            if (cg < pg + 1) { gen.set(l.target, pg + 1); changed = true; }
+        });
+    }
+
+    const maxGen = Math.max(...gen.values());
+    const gens   = Array.from({ length: maxGen + 1 }, () => []);
+    nodes.forEach(n => gens[gen.get(n.id) ?? 0].push(n));
+
+    // ── Phase 2: Barycenter crossing minimisation (4 passes) ─────────────────
+    const rank = new Map();
+    gens.forEach((layer, g) => layer.forEach((n, i) => rank.set(n.id, i)));
+
+    function baryOf(n, dir) {
+        const g  = gen.get(n.id) ?? 0;
+        const nb = dir === 'up'
+            ? parsOf.get(n.id).filter(p => (gen.get(p) ?? 0) < g)
+            : kidsOf.get(n.id).filter(c => (gen.get(c) ?? 0) > g);
+        return nb.length ? nb.reduce((s, id) => s + (rank.get(id) ?? 0), 0) / nb.length : null;
+    }
+    for (let pass = 0; pass < 4; pass++) {
+        for (let g = 1; g <= maxGen; g++) {
+            gens[g].sort((a, b) => (baryOf(a,'up') ?? rank.get(a.id)) - (baryOf(b,'up') ?? rank.get(b.id)));
+            gens[g].forEach((n, i) => rank.set(n.id, i));
+        }
+        for (let g = maxGen - 1; g >= 0; g--) {
+            gens[g].sort((a, b) => (baryOf(a,'down') ?? rank.get(a.id)) - (baryOf(b,'down') ?? rank.get(b.id)));
+            gens[g].forEach((n, i) => rank.set(n.id, i));
+        }
+    }
+
+    // ── Phase 3: Couple detection per generation ──────────────────────────────
+    const eheSet = new Set(ehen.map(e => `${Math.min(e.a,e.b)}_${Math.max(e.a,e.b)}`));
+    const isEhe  = (a, b) => eheSet.has(`${Math.min(a,b)}_${Math.max(a,b)}`);
+    const coupleOf = new Map();
+
+    gens.forEach((layer, g) => {
+        const layerSet = new Set(layer.map(n => n.id));
+        layer.forEach(n => {
+            if (coupleOf.has(n.id)) return;
+            // Ehe-first
+            for (const o of layer) {
+                if (o.id !== n.id && !coupleOf.has(o.id) && isEhe(n.id, o.id)) {
+                    coupleOf.set(n.id, o.id); coupleOf.set(o.id, n.id); return;
+                }
+            }
+            // Shared-child fallback
+            for (const cid of kidsOf.get(n.id)) {
+                if ((gen.get(cid) ?? 0) <= g) continue;
+                for (const pid of parsOf.get(cid)) {
+                    if (pid !== n.id && layerSet.has(pid) && !coupleOf.has(pid)) {
+                        coupleOf.set(n.id, pid); coupleOf.set(pid, n.id); return;
+                    }
+                }
+            }
+        });
+    });
+
+    // ── Phase 4: Build layout units per generation ────────────────────────────
+    // A unit = { nodes:[L] or [L,R], isCouple, children:Set<id>, w, _c }
+    const unitsByGen = gens.map((layer, g) => {
+        const done = new Set(), units = [];
+        layer.forEach(n => {
+            if (done.has(n.id)) return;
+            done.add(n.id);
+            const pid = coupleOf.get(n.id);
+            const childSet = new Set();
+            if (pid && !done.has(pid) && byId.has(pid)) {
+                done.add(pid);
+                const partner = byId.get(pid);
+                [n, partner].forEach(p =>
+                    kidsOf.get(p.id).forEach(cid => { if ((gen.get(cid) ?? 0) > g) childSet.add(cid); })
+                );
+                // Male left, female right (standard genogram convention)
+                const [L, R] = (n.geschlecht === 'F' && partner.geschlecht !== 'F')
+                    ? [partner, n] : [n, partner];
+                units.push({ nodes: [L, R], isCouple: true, children: childSet, w: SYM * 2 + CGAP });
+            } else {
+                kidsOf.get(n.id).forEach(cid => { if ((gen.get(cid) ?? 0) > g) childSet.add(cid); });
+                units.push({ nodes: [n], isCouple: false, children: childSet, w: SYM });
+            }
+        });
+        return units;
+    });
+
+    // ── Phase 5: Bottom-up x-positioning ─────────────────────────────────────
+    for (let g = maxGen; g >= 0; g--) {
+        const units = unitsByGen[g];
+
+        // Ideal x from already-placed children
+        units.forEach(u => {
+            const xs = [...u.children].map(cid => byId.get(cid)).filter(Boolean)
+                .map(c => c.x).filter(x => x !== undefined);
+            u._ix = xs.length ? xs.reduce((a, b) => a + b) / xs.length : null;
+        });
+        units.sort((a, b) => (a._ix ?? 1e9) - (b._ix ?? 1e9));
+
+        const anchored = units.filter(u => u._ix !== null);
+        const leaves   = units.filter(u => u._ix === null);
+
+        anchored.forEach(u => { u._c = u._ix; });
+        for (let i = 1; i < anchored.length; i++) {
+            const need = anchored[i-1]._c + (anchored[i-1].w + anchored[i].w) / 2 + HGAP;
+            if (anchored[i]._c < need) anchored[i]._c = need;
+        }
+
+        const placed = anchored.slice().sort((a, b) => a._c - b._c);
+        for (const leaf of leaves) {
+            const ideal = placed.length
+                ? placed[placed.length-1]._c + placed[placed.length-1].w/2 + HGAP + leaf.w/2
+                : 0;
+            const minD = u => (u.w + leaf.w) / 2 + HGAP;
+            const ok   = pos => placed.every(u => Math.abs(pos - u._c) >= minD(u) - 0.1);
+            const cands = [ideal, ...placed.flatMap(u => [u._c - minD(u), u._c + minD(u)])];
+            let best = cands.filter(ok).reduce((b, p) =>
+                b === null || Math.abs(p - ideal) < Math.abs(b - ideal) ? p : b, null);
+            if (best === null) best = placed.length
+                ? placed[placed.length-1]._c + minD(placed[placed.length-1]) : ideal;
+            leaf._c = best;
+            const idx = placed.findIndex(u => u._c > best);
+            idx === -1 ? placed.push(leaf) : placed.splice(idx, 0, leaf);
+        }
+
+        units.forEach(u => {
+            if (u.isCouple) {
+                u.nodes[0].x = u._c - (CGAP / 2 + HALF);
+                u.nodes[1].x = u._c + (CGAP / 2 + HALF);
+            } else {
+                u.nodes[0].x = u._c;
+            }
+            u.nodes.forEach(n => { n.y = g * GEN_H; });
+        });
+    }
+
+    // ── Phase 6: Top-down nudge toward children ───────────────────────────────
+    for (let g = 0; g < maxGen; g++) {
+        const row = [...unitsByGen[g]].sort((a, b) => a._c - b._c);
+        row.forEach((u, i) => {
+            const xs = [...u.children].map(cid => byId.get(cid)?.x).filter(x => x !== undefined);
+            if (!xs.length) return;
+            const ideal = xs.reduce((a, b) => a + b) / xs.length;
+            let mv = ideal - u._c;
+            if (Math.abs(mv) < 0.5) return;
+            const myL = u._c - u.w/2, myR = u._c + u.w/2;
+            if (mv > 0 && i < row.length - 1)
+                mv = Math.min(mv, Math.max(0, row[i+1]._c - row[i+1].w/2 - myR - HGAP));
+            else if (mv < 0 && i > 0)
+                mv = Math.max(mv, -Math.max(0, myL - row[i-1]._c - row[i-1].w/2 - HGAP));
+            if (Math.abs(mv) < 0.5) return;
+            u._c += mv;
+            u.nodes.forEach(n => { n.x += mv; });
+        });
+    }
+
+    // Centre graph
+    const allX = nodes.map(n => n.x).filter(x => x !== undefined);
+    const xOff = (Math.min(...allX) + Math.max(...allX)) / 2;
+    nodes.forEach(n => { n.x -= xOff; });
+    unitsByGen.forEach(units => units.forEach(u => { u._c -= xOff; }));
+
+    // ── Family map for edge rendering ─────────────────────────────────────────
+    const famByKey = new Map();
+    nodes.forEach(c => {
+        const cg  = gen.get(c.id) ?? 0;
+        const pIds = parsOf.get(c.id)
+            .filter(pid => byId.has(pid) && (gen.get(pid) ?? 0) < cg)
+            .sort((a, b) => a - b);
+        if (!pIds.length) return;
+        const key = pIds.join('_');
+        if (!famByKey.has(key)) famByKey.set(key, { pIds, children: [] });
+        famByKey.get(key).children.push(c);
+    });
+
+    return { gen, maxGen, gens, unitsByGen, coupleOf, byId, famByKey, eheSet };
+}
+
+// ── Draw ──────────────────────────────────────────────────────────────────────
+function draw({ nodes, gen, maxGen, unitsByGen, byId, famByKey, eheSet }) {
+    gBands.selectAll('*').remove();
+    gEdges.selectAll('*').remove();
+    gCouples.selectAll('*').remove();
+    gNodes.selectAll('*').remove();
+
+    // Alternating generation bands
+    for (let g = 0; g <= maxGen; g++) {
+        if (g % 2 === 1)
+            gBands.append('rect').attr('class', 'gen-band')
+                .attr('x', -60000).attr('width', 120000)
+                .attr('y', g * GEN_H - GEN_H / 2).attr('height', GEN_H);
+    }
+
+    // ── Family connectors ─────────────────────────────────────────────────────
+    // Collect which pId pairs already get a couple-bar via famByKey
+    const barDrawn = new Set();
+
+    famByKey.forEach(({ pIds, children }) => {
+        const pars = pIds.map(id => byId.get(id)).filter(Boolean);
+        if (!pars.length || !children.length) return;
+
+        const dropX       = pars.reduce((s, p) => s + p.x, 0) / pars.length;
+        const parentCentY = Math.max(...pars.map(p => p.y));
+        const parentBotY  = parentCentY + HALF;
+        const childTopY   = Math.min(...children.map(c => c.y)) - HALF;
+        const busY        = parentBotY + (childTopY - parentBotY) * 0.48;
+
+        // Couple bar (horizontal marriage line between same-gen partners)
+        if (pars.length === 2 && Math.abs(pars[0].y - pars[1].y) < 1) {
+            const [L, R] = pars[0].x < pars[1].x ? [pars[0], pars[1]] : [pars[1], pars[0]];
+            gCouples.append('line').attr('class', 'couple-bar')
+                .attr('x1', L.x + HALF).attr('y1', L.y)
+                .attr('x2', R.x - HALF).attr('y2', R.y);
+            const barKey = `${Math.min(L.id, R.id)}_${Math.max(L.id, R.id)}`;
+            barDrawn.add(barKey);
+        }
+
+        // Vertical trunk from couple midpoint (or single parent) to bus
+        gEdges.append('line').attr('class', 'fam-line')
+            .attr('x1', dropX).attr('y1', parentCentY)
+            .attr('x2', dropX).attr('y2', busY);
+
+        // Horizontal sibling bus
+        const childXs = children.map(c => c.x);
+        const busX1 = Math.min(dropX, ...childXs), busX2 = Math.max(dropX, ...childXs);
+        if (busX2 > busX1 + 1)
+            gEdges.append('line').attr('class', 'fam-line')
+                .attr('x1', busX1).attr('y1', busY)
+                .attr('x2', busX2).attr('y2', busY);
+
+        // Vertical drops to each child symbol top
+        children.forEach(c =>
+            gEdges.append('line').attr('class', 'fam-line')
+                .attr('x1', c.x).attr('y1', busY)
+                .attr('x2', c.x).attr('y2', c.y - HALF));
+    });
+
+    // Mate bars: Ehe couples with no family connector yet (childless / cross-gen)
+    eheSet.forEach(key => {
+        if (barDrawn.has(key)) return;
+        const [aStr, bStr] = key.split('_');
+        const p1 = byId.get(+aStr), p2 = byId.get(+bStr);
+        if (!p1 || !p2) return;
+        const [L, R] = p1.x < p2.x ? [p1, p2] : [p2, p1];
+        gCouples.append('line').attr('class', 'mate-bar')
+            .attr('x1', L.x + HALF).attr('y1', L.y)
+            .attr('x2', R.x - HALF).attr('y2', R.y);
+    });
+
+    // ── Person symbols ────────────────────────────────────────────────────────
+    const tt = document.getElementById('tooltip');
+
+    const personSel = gNodes.selectAll('g.person').data(nodes, d => d.id).enter()
+        .append('g').attr('class', 'person')
+        .attr('transform', d => `translate(${d.x ?? 0},${d.y ?? 0})`)
+        .on('click', (_, d) => window.location.href = d.url)
+        .on('mouseover', (_, d) => {
+            tt.innerHTML = `<strong>${d.name}</strong>`
+                + (d.lebensdaten ? `<br><span style="opacity:.75">${d.lebensdaten}</span>` : '');
+            tt.style.display = 'block';
+        })
+        .on('mousemove', e => {
+            const r = wrap.getBoundingClientRect();
+            let x = e.clientX - r.left + 16, y = e.clientY - r.top - 14;
+            if (x + 240 > r.width) x -= 258;
+            tt.style.left = x + 'px'; tt.style.top = y + 'px';
+        })
+        .on('mouseout', () => { tt.style.display = 'none'; });
+
+    personSel.each(function(d) {
+        const sel      = d3.select(this);
+        const deceased = d.sterbejahr !== null && d.sterbejahr !== undefined;
+        const g        = d.geschlecht;
+
+        // Base symbol
+        if (g === 'M') {
+            sel.append('rect')
+                .attr('x', -HALF).attr('y', -HALF)
+                .attr('width', SYM).attr('height', SYM).attr('rx', 3)
+                .attr('fill', deceased ? '#bfdbfe' : '#dbeafe')
+                .attr('stroke', '#3b82f6').attr('stroke-width', 2);
+        } else if (g === 'F') {
+            sel.append('circle').attr('r', HALF)
+                .attr('fill', deceased ? '#fbcfe8' : '#fce7f3')
+                .attr('stroke', '#ec4899').attr('stroke-width', 2);
+        } else {
+            // Unknown: neutral square with grey
+            sel.append('rect')
+                .attr('x', -HALF).attr('y', -HALF)
+                .attr('width', SYM).attr('height', SYM).attr('rx', 3)
+                .attr('fill', deceased ? '#e2e8f0' : '#f1f5f9')
+                .attr('stroke', '#94a3b8').attr('stroke-width', 2);
+        }
+
+        // Deceased: X cross through symbol
+        if (deceased) {
+            const m = HALF * 0.7;
+            sel.append('line')
+                .attr('x1', -m).attr('y1', -m).attr('x2', m).attr('y2', m)
+                .attr('stroke', '#475569').attr('stroke-width', 1.8).attr('stroke-linecap', 'round');
+            sel.append('line')
+                .attr('x1',  m).attr('y1', -m).attr('x2', -m).attr('y2', m)
+                .attr('stroke', '#475569').attr('stroke-width', 1.8).attr('stroke-linecap', 'round');
+        }
+
+        // Name label (below symbol)
+        const nm = d.name || '';
+        sel.append('text').attr('class', 'lbl-name').attr('text-anchor', 'middle')
+            .attr('y', HALF + TEXT_PAD)
+            .text(nm.length > 17 ? nm.slice(0, 15) + '…' : nm);
+
+        if (d.lebensdaten)
+            sel.append('text').attr('class', 'lbl-dates').attr('text-anchor', 'middle')
+                .attr('y', HALF + TEXT_PAD + LINE_H)
+                .text(d.lebensdaten);
+    });
+}
+
+function fitView() {
+    try {
+        const b = gRoot.node().getBBox();
+        if (!b.width) return;
+        const s = Math.min(1, (W - 80) / b.width, (H - 80) / b.height);
+        svg.transition().duration(600).call(zoom.transform,
+            d3.zoomIdentity
+                .translate((W - b.width*s)/2 - b.x*s, (H - b.height*s)/2 - b.y*s)
+                .scale(s));
+    } catch(e) {}
+}
+
+fetch('/api/stammbaum/gesamt/')
+    .then(r => r.json())
+    .then(({ nodes, links, ehen = [] }) => {
+        if (!nodes.length) {
+            document.getElementById('stats-badge').textContent = 'Keine Personen vorhanden';
+            return;
+        }
+        const result = computeLayout(nodes, links, ehen);
+        draw({ nodes, ...result });
+        document.getElementById('stats-badge').textContent =
+            `${nodes.length} Personen · ${result.maxGen + 1} Generationen`;
+        fitView();
+    })
+    .catch(e => {
+        document.getElementById('stats-badge').textContent = 'Fehler beim Laden.';
+        console.error(e);
+    });
+
+document.getElementById('btnFit').addEventListener('click', fitView);
+</script>
+{% endblock %}
