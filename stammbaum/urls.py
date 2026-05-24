@@ -31,4 +31,6 @@ urlpatterns = [
     path('export/gedcom/', views.export_gedcom, name='export_gedcom'),
     path('export/csv/', views.export_csv, name='export_csv'),
     path('import/', views.import_view, name='import'),
+    path('stammbaum/medium/', views.stammbaum_medium, name='stammbaum_medium'),
+    path('api/stammbaum/medium/svg/', views.stammbaum_medium_svg, name='stammbaum_medium_svg'),
 ]

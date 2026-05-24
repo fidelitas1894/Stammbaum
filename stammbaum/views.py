@@ -76,6 +76,120 @@ def stammbaum_gesamt(request):
     return render(request, 'stammbaum/stammbaum_gesamt.html')
 
 
+def stammbaum_medium(request):
+    return render(request, 'stammbaum/stammbaum_medium.html')
+
+
+def stammbaum_medium_svg(request):
+    import graphviz
+
+    personen       = list(Person.objects.all())
+    ehen           = list(Ehe.objects.select_related('partner1', 'partner2').all())
+    elternschaften = list(Elternschaft.objects.select_related('kind', 'vater', 'mutter').all())
+
+    # Ehe-Lookup: frozenset(p1_id, p2_id) → Ehe-PK
+    ehe_by_partners = {}
+    for e in ehen:
+        key = frozenset(filter(None, [e.partner1_id, e.partner2_id]))
+        ehe_by_partners[key] = e.pk
+
+    dot = graphviz.Digraph(
+        'Stammbaum',
+        graph_attr={
+            'rankdir':  'TB',
+            'splines':  'ortho',
+            'nodesep':  '0.6',
+            'ranksep':  '0.9',
+            'bgcolor':  'transparent',
+            'fontname': 'Helvetica',
+        },
+        node_attr={
+            'fontname': 'Helvetica',
+            'fontsize': '11',
+            'margin':   '0.18,0.10',
+        },
+        edge_attr={
+            'arrowsize': '0.6',
+            'color':     '#94a3b8',
+        },
+    )
+
+    # Personenknoten
+    for p in personen:
+        if p.geschlecht == 'M':
+            fill, stroke = '#dbeafe', '#3b82f6'
+        elif p.geschlecht == 'F':
+            fill, stroke = '#fce7f3', '#ec4899'
+        else:
+            fill, stroke = '#f1f5f9', '#94a3b8'
+
+        label   = p.vollname
+        tooltip = p.vollname
+        if p.lebensdaten:
+            label   += f'\n{p.lebensdaten}'
+            tooltip += f' ({p.lebensdaten})'
+
+        dot.node(
+            f'p{p.pk}',
+            label     = label,
+            shape     = 'box',
+            style     = 'filled,rounded',
+            fillcolor = fill,
+            color     = stroke,
+            penwidth  = '1.5',
+            URL       = f'/personen/{p.pk}/',
+            tooltip   = tooltip,
+        )
+
+    # Familien-/Partnerknoten + Kanten
+    seen_fam = set()
+
+    for el in elternschaften:
+        key    = frozenset(filter(None, [el.vater_id, el.mutter_id]))
+        ehe_pk = ehe_by_partners.get(key)
+        fam_id = f'f{ehe_pk}' if ehe_pk else f'vf{el.kind_id}'
+
+        if fam_id not in seen_fam:
+            seen_fam.add(fam_id)
+            dot.node(fam_id, shape='point', width='0.08', height='0.08',
+                     label='', style='filled', fillcolor='#64748b', color='#64748b')
+
+            with dot.subgraph() as s:
+                s.attr(rank='same')
+                for pid in (el.vater_id, el.mutter_id):
+                    if pid:
+                        s.node(f'p{pid}')
+                        dot.edge(f'p{pid}', fam_id,
+                                 arrowhead='none', style='solid', color='#f59e0b', penwidth='2')
+                s.node(fam_id)
+
+        if el.kind_id:
+            dot.edge(fam_id, f'p{el.kind_id}', color='#64748b')
+
+    # Kinderlose Ehen
+    for e in ehen:
+        fid = f'f{e.pk}'
+        if fid not in seen_fam:
+            seen_fam.add(fid)
+            dot.node(fid, shape='point', width='0.08', height='0.08',
+                     label='', style='filled', fillcolor='#64748b', color='#64748b')
+            with dot.subgraph() as s:
+                s.attr(rank='same')
+                for pid in (e.partner1_id, e.partner2_id):
+                    if pid:
+                        s.node(f'p{pid}')
+                        dot.edge(f'p{pid}', fid,
+                                 arrowhead='none', style='solid', color='#f59e0b', penwidth='2')
+                s.node(fid)
+
+    svg_bytes = dot.pipe(format='svg')
+    svg_text  = svg_bytes.decode('utf-8')
+    # Nur den <svg>-Teil zurückgeben, ohne XML-Prolog
+    svg_text  = svg_text[svg_text.index('<svg'):]
+
+    return HttpResponse(svg_text, content_type='image/svg+xml')
+
+
 def stammbaum_genogramm(request):
     return render(request, 'stammbaum/stammbaum_genogramm.html')
 
