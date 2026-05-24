@@ -76,6 +76,139 @@ def stammbaum_gesamt(request):
     return render(request, 'stammbaum/stammbaum_gesamt.html')
 
 
+def stammbaum_bfs(request):
+    return render(request, 'stammbaum/stammbaum_bfs.html')
+
+
+def stammbaum_genogramm(request):
+    return render(request, 'stammbaum/stammbaum_genogramm.html')
+
+
+def stammbaum_fraktal(request):
+    return render(request, 'stammbaum/stammbaum_fraktal.html')
+
+
+def stammbaum_force(request):
+    return render(request, 'stammbaum/stammbaum_force.html')
+
+
+def stammbaum_fraktal_json(request):
+    from collections import defaultdict, deque
+
+    personen_qs = list(Person.objects.all().values(
+        'pk', 'nachname', 'vornamen', 'geschlecht', 'geburtsdatum'
+    ))
+    personen = {p['pk']: p for p in personen_qs}
+
+    # Build partner map: pk → [{id, name, geschlecht, url}]
+    partner_map = defaultdict(list)
+    for ehe in Ehe.objects.values('partner1_id', 'partner2_id'):
+        p1_id, p2_id = ehe['partner1_id'], ehe['partner2_id']
+        for own_id, other_id in ((p1_id, p2_id), (p2_id, p1_id)):
+            if own_id in personen and other_id in personen:
+                op = personen[other_id]
+                vorname = (op['vornamen'] or '').split(',')[0].strip()
+                partner_map[own_id].append({
+                    'id': other_id,
+                    'name': f"{vorname} {op['nachname']}".strip(),
+                    'geschlecht': op['geschlecht'],
+                    'url': f"/personen/{other_id}/",
+                })
+
+    children_of = defaultdict(list)
+    has_parent = set()
+
+    for e in Elternschaft.objects.values('vater_id', 'mutter_id', 'kind_id'):
+        if e['vater_id']:
+            children_of[e['vater_id']].append(e['kind_id'])
+        if e['mutter_id']:
+            children_of[e['mutter_id']].append(e['kind_id'])
+        has_parent.add(e['kind_id'])
+
+    # Count descendants per person via bottom-up BFS
+    desc_count = {pk: 0 for pk in personen}
+    # Topological order: process children before parents
+    in_deg = {pk: len(children_of.get(pk, [])) for pk in personen}
+    queue = deque(pk for pk in personen if not children_of.get(pk))
+    topo = []
+    visited_topo = set()
+    while queue:
+        pk = queue.popleft()
+        if pk in visited_topo:
+            continue
+        visited_topo.add(pk)
+        topo.append(pk)
+    # Simple BFS descendant count
+    for pk in personen:
+        q2 = deque(children_of.get(pk, []))
+        seen = set()
+        while q2:
+            c = q2.popleft()
+            if c in seen:
+                continue
+            seen.add(c)
+            desc_count[pk] += 1
+            q2.extend(children_of.get(c, []))
+
+    # Use ?root=pk or default to person with most descendants
+    root_pk = request.GET.get('root')
+    if root_pk:
+        try:
+            root_pk = int(root_pk)
+            if root_pk not in personen:
+                root_pk = None
+        except (ValueError, TypeError):
+            root_pk = None
+
+    if root_pk is None:
+        # Person with most descendants who has no parent (true root)
+        candidates = [(pk, desc_count[pk]) for pk in personen if pk not in has_parent and desc_count[pk] > 0]
+        if not candidates:
+            candidates = [(pk, desc_count[pk]) for pk in personen if desc_count[pk] > 0]
+        root_pk = max(candidates, key=lambda x: x[1])[0] if candidates else (next(iter(personen)) if personen else None)
+
+    # Build top-10 candidates for dropdown (most descendants, preferring true roots)
+    top_candidates = sorted(
+        [(pk, desc_count[pk]) for pk in personen if desc_count[pk] > 0],
+        key=lambda x: x[1], reverse=True
+    )[:10]
+    candidates_data = []
+    for pk, cnt in top_candidates:
+        p = personen[pk]
+        vorname = (p['vornamen'] or '').split(',')[0].strip()
+        candidates_data.append({
+            'id': pk,
+            'name': f"{vorname} {p['nachname']}".strip(),
+            'descendants': cnt,
+        })
+
+    def build_node(pk, visited):
+        if pk in visited:
+            return None
+        visited.add(pk)
+        p = personen[pk]
+        vorname = (p['vornamen'] or '').split(',')[0].strip()
+        node = {
+            'id': pk,
+            'name': f"{vorname} {p['nachname']}".strip(),
+            'geschlecht': p['geschlecht'],
+            'geburtsjahr': p['geburtsdatum'].year if p['geburtsdatum'] else None,
+            'url': f"/personen/{pk}/",
+            'partners': partner_map.get(pk, []),
+        }
+        kids = [build_node(c, set(visited)) for c in children_of.get(pk, [])]
+        kids = [k for k in kids if k]
+        if kids:
+            node['children'] = kids
+        return node
+
+    tree = build_node(root_pk, set()) if root_pk else None
+    if not tree:
+        tree = {'id': 0, 'name': 'Kein Stammbaum', 'virtual': True}
+
+    return JsonResponse({'tree': tree, 'candidates': candidates_data, 'root_pk': root_pk})
+
+
 def stammbaum_gesamt_json(request):
     personen = list(Person.objects.all().values(
         'pk', 'nachname', 'vornamen', 'geschlecht', 'geburtsdatum', 'sterbedatum'
@@ -103,7 +236,14 @@ def stammbaum_gesamt_json(request):
         if e.mutter_id:
             links.append({'source': e.mutter_id, 'target': e.kind_id, 'typ': 'elternteil'})
 
-    return JsonResponse({'nodes': nodes, 'links': links})
+    pk_set = {p['pk'] for p in personen}
+    ehen = [
+        {'a': e.partner1_id, 'b': e.partner2_id}
+        for e in Ehe.objects.all()
+        if e.partner1_id in pk_set and e.partner2_id in pk_set
+    ]
+
+    return JsonResponse({'nodes': nodes, 'links': links, 'ehen': ehen})
 
 def stammbaum(request):
     personen = Person.objects.all().order_by('nachname', 'vornamen')
@@ -330,6 +470,14 @@ def person_detail(request, pk):
             partner_kinder[key] = {'partner': other, 'kinder': []}
         partner_kinder[key]['kinder'].append(e.kind)
 
+    # Also include Ehe-based partners with no shared children
+    for ehe in Ehe.objects.filter(
+        Q(partner1=person) | Q(partner2=person)
+    ).select_related('partner1', 'partner2'):
+        partner = ehe.partner2 if ehe.partner1_id == person.pk else ehe.partner1
+        if partner.pk not in partner_kinder:
+            partner_kinder[partner.pk] = {'partner': partner, 'kinder': []}
+
     # Sort each group's children by birth date
     for group in partner_kinder.values():
         group['kinder'].sort(key=lambda p: p.geburtsdatum or date.max)
@@ -419,10 +567,75 @@ def person_bearbeiten(request, pk):
     else:
         form = PersonForm(instance=person)
         eltern_form = ElternschaftForm(instance=elternschaft)
+
+    partner_list = []
+    for ehe in Ehe.objects.filter(Q(partner1=person) | Q(partner2=person)):
+        partner = ehe.partner2 if ehe.partner1_id == person.pk else ehe.partner1
+        partner_list.append({'ehe_pk': ehe.pk, 'partner': partner})
+
     return render(request, 'stammbaum/person_form.html', {
         'form': form, 'eltern_form': eltern_form,
         'titel': f'{person.vollname} bearbeiten', 'person': person,
+        'partner_list': partner_list,
     })
+
+
+# ---------------------------------------------------------------------------
+# Partner-Verwaltung (AJAX)
+# ---------------------------------------------------------------------------
+
+@login_required
+def partner_hinzufuegen(request, pk):
+    if request.method != 'POST':
+        return JsonResponse({'error': 'POST required'}, status=405)
+    person = get_object_or_404(Person, pk=pk)
+    try:
+        data = json.loads(request.body)
+        partner_id = int(data['partner_id'])
+    except (KeyError, ValueError, json.JSONDecodeError):
+        return JsonResponse({'error': 'Ungültige Daten'}, status=400)
+    if partner_id == pk:
+        return JsonResponse({'error': 'Person kann nicht eigener Partner sein'}, status=400)
+    partner = get_object_or_404(Person, pk=partner_id)
+    existing = Ehe.objects.filter(
+        Q(partner1=person, partner2=partner) | Q(partner1=partner, partner2=person)
+    ).first()
+    if existing:
+        return JsonResponse({'error': 'Bereits eingetragen', 'ehe_pk': existing.pk}, status=400)
+    ehe = Ehe.objects.create(partner1=person, partner2=partner)
+    return JsonResponse({
+        'ok': True, 'ehe_pk': ehe.pk,
+        'partner_name': partner.vollname,
+        'partner_url': partner.get_absolute_url(),
+    })
+
+
+@login_required
+def partner_entfernen(request, pk, ehe_pk):
+    if request.method != 'POST':
+        return JsonResponse({'error': 'POST required'}, status=405)
+    get_object_or_404(Person, pk=pk)
+    ehe = get_object_or_404(Ehe, pk=ehe_pk)
+    if ehe.partner1_id != pk and ehe.partner2_id != pk:
+        return JsonResponse({'error': 'Nicht berechtigt'}, status=403)
+    ehe.delete()
+    return JsonResponse({'ok': True})
+
+
+def personen_suche_api(request):
+    q = request.GET.get('q', '').strip()
+    if len(q) < 2:
+        return JsonResponse([], safe=False)
+    exclude_pk = request.GET.get('exclude')
+    qs = Person.objects.filter(Q(nachname__icontains=q) | Q(vornamen__icontains=q))
+    if exclude_pk:
+        try:
+            qs = qs.exclude(pk=int(exclude_pk))
+        except ValueError:
+            pass
+    return JsonResponse([
+        {'id': p.pk, 'name': p.vollname} for p in qs[:10]
+    ], safe=False)
 
 
 # ---------------------------------------------------------------------------
@@ -464,9 +677,21 @@ def karte_json(request):
         }
 
     result = []
-    for name, data in {**orte_geburt, **orte_tod}.items():
+    for name in alle_orte:
         coords = ort_coords.get(name, {'lat': None, 'lon': None, 'geocodiert': False})
-        result.append({**data, **coords})
+        in_geburt = name in orte_geburt
+        in_tod = name in orte_tod
+        if in_geburt and in_tod:
+            result.append({
+                'ort': name, 'typ': 'both',
+                'personen_geburt': orte_geburt[name]['personen'],
+                'personen_tod': orte_tod[name]['personen'],
+                **coords,
+            })
+        elif in_geburt:
+            result.append({**orte_geburt[name], **coords})
+        else:
+            result.append({**orte_tod[name], **coords})
     return JsonResponse(result, safe=False)
 
 
@@ -486,10 +711,16 @@ def geocode_ort(request, ort_name):
                 ort.lat = float(data[0]['lat'])
                 ort.lon = float(data[0]['lon'])
                 ort.geocodiert_am = timezone.now()
+                ort.geo_problem = False
+                ort.save()
+            else:
+                # Nominatim returned no result → mark as problem
+                ort.geo_problem = True
                 ort.save()
         except Exception:
             pass
-    return JsonResponse({'lat': ort.lat, 'lon': ort.lon, 'name': ort.name})
+    return JsonResponse({'lat': ort.lat, 'lon': ort.lon, 'name': ort.name,
+                         'geo_problem': ort.geo_problem})
 
 
 @login_required
@@ -506,8 +737,84 @@ def ort_koordinaten_update(request, ort_name):
     ort.lat = lat
     ort.lon = lon
     ort.geocodiert_am = timezone.now()
+    ort.geo_problem = False
     ort.save()
     return JsonResponse({'ok': True, 'lat': ort.lat, 'lon': ort.lon})
+
+
+@login_required
+def ort_problem_toggle(request, ort_name):
+    if request.method != 'POST':
+        return JsonResponse({'error': 'POST required'}, status=405)
+    ort, _ = Ort.objects.get_or_create(name=ort_name)
+    ort.geo_problem = not ort.geo_problem
+    ort.save()
+    return JsonResponse({'geo_problem': ort.geo_problem})
+
+
+def konflikte(request):
+    """Orte ohne Koordinaten oder mit geo_problem=True, gruppiert nach Person."""
+    from django.db.models import Q
+
+    # Alle Ort-Namen die als Geburts-/Sterbeort verwendet werden
+    orte_in_use = {}
+    for p in Person.objects.exclude(geburtsort='').only('pk', 'nachname', 'vornamen', 'geburtsort'):
+        name = p.geburtsort.strip()
+        if name:
+            orte_in_use.setdefault(name, []).append({'person': p, 'art': 'Geburtsort'})
+    for p in Person.objects.exclude(sterbeort='').only('pk', 'nachname', 'vornamen', 'sterbeort'):
+        name = p.sterbeort.strip()
+        if name:
+            orte_in_use.setdefault(name, []).append({'person': p, 'art': 'Sterbeort'})
+
+    # Bekannte Orte aus DB
+    ort_db = {o.name: o for o in Ort.objects.filter(name__in=orte_in_use.keys())}
+
+    # Konflikte aufbauen
+    conflicts = []
+    for ort_name, eintraege in sorted(orte_in_use.items()):
+        ort = ort_db.get(ort_name)
+        hat_koordinaten = ort and ort.lat is not None
+        ist_problem = ort and ort.geo_problem
+
+        if hat_koordinaten and not ist_problem:
+            continue  # alles ok, überspringen
+
+        status = 'problem' if ist_problem else 'keine_koordinaten'
+        for e in eintraege:
+            conflicts.append({
+                'person': e['person'],
+                'art': e['art'],
+                'ort_name': ort_name,
+                'ort': ort,
+                'hat_koordinaten': hat_koordinaten,
+                'status': status,
+            })
+
+    conflicts.sort(key=lambda c: (c['ort_name'], c['person'].nachname))
+    return render(request, 'stammbaum/konflikte.html', {
+        'conflicts': conflicts,
+        'anzahl': len(conflicts),
+    })
+
+
+def konflikte_count(request):
+    """Anzahl offener Konflikte für Badge in Navigation."""
+    from django.db.models import Q
+    orte_in_use = set()
+    for p in Person.objects.exclude(geburtsort='').values_list('geburtsort', flat=True):
+        orte_in_use.add(p.strip())
+    for p in Person.objects.exclude(sterbeort='').values_list('sterbeort', flat=True):
+        orte_in_use.add(p.strip())
+
+    ok_orte = set(
+        Ort.objects.filter(name__in=orte_in_use, lat__isnull=False, geo_problem=False)
+        .values_list('name', flat=True)
+    )
+    problem_count = sum(
+        1 for name in orte_in_use if name and name not in ok_orte
+    )
+    return JsonResponse({'count': problem_count})
 
 
 # ---------------------------------------------------------------------------
@@ -909,3 +1216,17 @@ def verwandtschaft_api(request):
         'pfad_a': [p_info(persons_map[pk]) for pk in path_a_pks],
         'pfad_b': [p_info(persons_map[pk]) for pk in path_b_pks],
     })
+
+
+# ---------------------------------------------------------------------------
+# Sugiyama-Layout (serverseitiges DAG-Layout)
+# ---------------------------------------------------------------------------
+
+def stammbaum_sugiyama(request):
+    return render(request, 'stammbaum/stammbaum_sugiyama.html')
+
+
+def stammbaum_sugiyama_json(request):
+    from .sugiyama import compute_sugiyama_layout
+    data = compute_sugiyama_layout()
+    return JsonResponse(data)

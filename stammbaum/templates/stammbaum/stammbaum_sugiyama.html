@@ -1,0 +1,199 @@
+{% extends "stammbaum/base.html" %}
+{% block title %}Stammbaum – Sugiyama-Layout{% endblock %}
+
+{% block extra_css %}
+<style>
+#graph-wrap {
+    width: 100%; height: 86vh;
+    background: linear-gradient(160deg, #f0f4f8 0%, #e8edf4 100%);
+    border-radius: 12px; overflow: hidden; position: relative;
+    cursor: grab; user-select: none;
+    box-shadow: 0 2px 12px rgba(0,0,0,.08), inset 0 1px 0 rgba(255,255,255,.7);
+}
+#graph-wrap:active { cursor: grabbing; }
+#svg-root { display: block; }
+
+/* Personen-Karten */
+.p-card { cursor: pointer; }
+.p-card:hover .p-bg { opacity: .82; }
+.p-bg   { rx: 7; ry: 7; }
+.p-name { font: 700 11px/1.2 system-ui,sans-serif; fill: #1e293b; pointer-events: none; }
+.p-info { font: 10px/1.2 system-ui,sans-serif;     fill: #64748b; pointer-events: none; }
+
+/* Familienknoten */
+.f-node { cursor: default; }
+.f-bg   { rx: 3; ry: 3; fill: #94a3b8; stroke: #64748b; stroke-width: 1; }
+
+/* Kanten */
+.edge { fill: none; stroke: #94a3b8; stroke-width: 1.4; opacity: .7; }
+
+/* Loading */
+#loading { position: absolute; inset: 0; display: flex; align-items: center;
+           justify-content: center; font: 600 15px system-ui; color: #64748b; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-2">
+  <h4 class="mb-0">Sugiyama-Layout</h4>
+  <small class="text-muted">Serverseitiges Layer-Ranking · Median-Kreuzungsminimierung</small>
+</div>
+
+<div id="graph-wrap">
+  <div id="loading">Berechne Layout…</div>
+  <svg id="svg-root" xmlns="http://www.w3.org/2000/svg"></svg>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const NODE_W = 140, NODE_H = 50, FAM_W = 14, FAM_H = 14;
+
+// ── SVG-Hilfsfunktionen ───────────────────────────────────────────────────────
+const ns = 'http://www.w3.org/2000/svg';
+const el = (tag, attrs={}) => {
+  const e = document.createElementNS(ns, tag);
+  for (const [k,v] of Object.entries(attrs)) e.setAttribute(k, v);
+  return e;
+};
+const txt = (content, attrs={}) => {
+  const t = el('text', attrs);
+  t.textContent = content;
+  return t;
+};
+
+// ── Pan & Zoom ────────────────────────────────────────────────────────────────
+(function initPanZoom(wrap) {
+  let ox=0, oy=0, sx=0, sy=0, dragging=false, scale=1;
+  let tx=0, ty=0;
+  const svg = wrap.querySelector('svg');
+
+  const applyTransform = () => {
+    svg.style.transform = `translate(${tx}px,${ty}px) scale(${scale})`;
+    svg.style.transformOrigin = '0 0';
+  };
+
+  wrap.addEventListener('mousedown', e => {
+    dragging=true; ox=e.clientX-tx; oy=e.clientY-ty;
+  });
+  window.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    tx=e.clientX-ox; ty=e.clientY-oy; applyTransform();
+  });
+  window.addEventListener('mouseup', () => { dragging=false; });
+
+  wrap.addEventListener('wheel', e => {
+    e.preventDefault();
+    const rect = wrap.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const delta = e.deltaY < 0 ? 1.12 : 1/1.12;
+    tx = mx - delta*(mx-tx);
+    ty = my - delta*(my-ty);
+    scale *= delta;
+    applyTransform();
+  }, {passive: false});
+})(document.getElementById('graph-wrap'));
+
+// ── Edge-Routing: orthogonale Kurve ──────────────────────────────────────────
+function edgePath(sx, sy, tx, ty) {
+  const my = (sy + ty) / 2;
+  return `M${sx},${sy} C${sx},${my} ${tx},${my} ${tx},${ty}`;
+}
+
+// ── Render ────────────────────────────────────────────────────────────────────
+async function render() {
+  const resp = await fetch('/api/stammbaum/sugiyama/');
+  const data = await resp.json();
+  document.getElementById('loading').remove();
+
+  const svg = document.getElementById('svg-root');
+  svg.setAttribute('width',  data.width  || 800);
+  svg.setAttribute('height', data.height || 600);
+
+  // Index nach ID
+  const byId = {};
+  for (const n of data.nodes) byId[n.id] = n;
+
+  // Kanten zuerst (hinter den Knoten)
+  const edgeGroup = el('g', {'class': 'edges'});
+  for (const edge of data.edges) {
+    const s = byId[edge.source], t = byId[edge.target];
+    if (!s || !t) continue;
+    const sw = s.type === 'family' ? FAM_W : NODE_W;
+    const sh = s.type === 'family' ? FAM_H : NODE_H;
+    const tw = t.type === 'family' ? FAM_W : NODE_W;
+    const th = t.type === 'family' ? FAM_H : NODE_H;
+    const path = el('path', {
+      'class': 'edge',
+      'd': edgePath(s.x, s.y + sh/2, t.x, t.y - th/2),
+    });
+    edgeGroup.appendChild(path);
+  }
+  svg.appendChild(edgeGroup);
+
+  // Knoten
+  const nodeGroup = el('g', {'class': 'nodes'});
+  for (const n of data.nodes) {
+    if (n.type === 'dummy') continue;
+
+    const g = el('g', {
+      'class': n.type === 'person' ? 'p-card' : 'f-node',
+      'transform': `translate(${n.x - (n.type==='family' ? FAM_W : NODE_W)/2},${n.y - (n.type==='family' ? FAM_H : NODE_H)/2})`,
+    });
+
+    if (n.type === 'family') {
+      const bg = el('rect', {
+        'class': 'f-bg', 'width': FAM_W, 'height': FAM_H,
+      });
+      g.appendChild(bg);
+    } else {
+      // Geschlechtsfarbe
+      const fill = n.geschlecht === 'M' ? '#dbeafe'
+                 : n.geschlecht === 'F' ? '#fce7f3'
+                 :                         '#f1f5f9';
+      const stroke = n.geschlecht === 'M' ? '#3b82f6'
+                   : n.geschlecht === 'F' ? '#ec4899'
+                   :                         '#94a3b8';
+      const bg = el('rect', {
+        'class': 'p-bg', 'width': NODE_W, 'height': NODE_H,
+        'fill': fill, 'stroke': stroke, 'stroke-width': '1.5',
+      });
+      g.appendChild(bg);
+
+      // Name (max 2 Zeilen, wird abgeschnitten)
+      const parts = (n.label || '').split(' ');
+      const line1 = parts.slice(0, 2).join(' ');
+      const line2 = parts.slice(2).join(' ');
+
+      const t1 = txt(line1, {
+        'class': 'p-name', 'x': NODE_W/2, 'y': line2 ? 17 : 26,
+        'text-anchor': 'middle',
+      });
+      g.appendChild(t1);
+
+      if (line2) {
+        const t2 = txt(line2, {
+          'class': 'p-name', 'x': NODE_W/2, 'y': 31,
+          'text-anchor': 'middle',
+        });
+        g.appendChild(t2);
+      }
+
+      if (n.db_id) {
+        g.addEventListener('click', () => {
+          window.location.href = `/personen/${n.db_id}/`;
+        });
+      }
+    }
+
+    nodeGroup.appendChild(g);
+  }
+  svg.appendChild(nodeGroup);
+}
+
+render().catch(err => {
+  document.getElementById('loading').textContent = 'Fehler beim Laden: ' + err;
+});
+</script>
+{% endblock %}
