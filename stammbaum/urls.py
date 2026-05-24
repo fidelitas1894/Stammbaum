@@ -33,4 +33,6 @@ urlpatterns = [
     path('import/', views.import_view, name='import'),
     path('stammbaum/medium/', views.stammbaum_medium, name='stammbaum_medium'),
     path('api/stammbaum/medium/svg/', views.stammbaum_medium_svg, name='stammbaum_medium_svg'),
+    path('stammbaum/ftm/', views.stammbaum_ftm, name='stammbaum_ftm'),
+    path('api/stammbaum/ftm/svg/', views.stammbaum_ftm_svg, name='stammbaum_ftm_svg'),
 ]

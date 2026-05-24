@@ -80,6 +80,35 @@ def stammbaum_medium(request):
     return render(request, 'stammbaum/stammbaum_medium.html')
 
 
+def stammbaum_ftm(request):
+    return render(request, 'stammbaum/stammbaum_ftm.html')
+
+
+def stammbaum_ftm_svg(request):
+    import graphviz
+    from .familytreemaker import Family
+
+    personen       = list(Person.objects.all())
+    ehen           = list(Ehe.objects.select_related('partner1', 'partner2').all())
+    elternschaften = list(Elternschaft.objects.select_related('kind', 'vater', 'mutter').all())
+
+    family = Family()
+    family.populate_from_django(personen, ehen, elternschaften)
+
+    ancestor = family.find_first_ancestor()
+    if not ancestor:
+        return HttpResponse('<svg xmlns="http://www.w3.org/2000/svg"/>', content_type='image/svg+xml')
+
+    dot_string = family.output_dot_string(ancestor)
+
+    src = graphviz.Source(dot_string)
+    svg_bytes = src.pipe(format='svg')
+    svg_text  = svg_bytes.decode('utf-8')
+    svg_text  = svg_text[svg_text.index('<svg'):]
+
+    return HttpResponse(svg_text, content_type='image/svg+xml')
+
+
 def stammbaum_medium_svg(request):
     import graphviz
 
